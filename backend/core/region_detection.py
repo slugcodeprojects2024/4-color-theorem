@@ -33,15 +33,27 @@ class RegionDetector:
             gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
         else:
             gray = image.copy()
-            
+        
+        print(f"Debug - Image shape: {image.shape}")
+        print(f"Debug - Gray shape: {gray.shape}")
+        
         # Detect edges
         edges = self._detect_edges(gray)
+        print(f"Debug - Edge pixels found: {np.sum(edges > 0)}")
+        
+        # Save debug image
+        cv2.imwrite('debug_edges.png', edges)
         
         # Clean up edges
         cleaned_edges = self._clean_edges(edges)
         
         # Find regions
         labeled_regions, contours = self._find_regions(cleaned_edges)
+        print(f"Debug - Number of regions found: {len(contours)}")
+        print(f"Debug - Unique labels: {np.unique(labeled_regions)}")
+        
+        # Save debug labeled image
+        cv2.imwrite('debug_labeled.png', labeled_regions * 50)  # Scale for visibility
         
         # Compute statistics
         stats = {
@@ -116,7 +128,7 @@ class RegionDetector:
     
     def find_adjacent_regions(self, labeled_regions: np.ndarray) -> Dict[int, Set[int]]:
         """
-        Find which regions are adjacent to each other.
+        Find which regions are adjacent to each other, accounting for thin separating lines.
         
         Args:
             labeled_regions: Image with labeled regions
@@ -127,22 +139,49 @@ class RegionDetector:
         adjacency = {}
         h, w = labeled_regions.shape
         
-        # Check all neighboring pixels
-        for y in range(h):
-            for x in range(w):
-                current = int(labeled_regions[y, x])
-                if current == 0:  # Skip background
-                    continue
-                    
-                if current not in adjacency:
-                    adjacency[current] = set()
+        # Debug: Show unique regions
+        unique_regions = np.unique(labeled_regions)
+        print(f"Debug - Unique regions in image: {unique_regions}")
+        
+        # Initialize adjacency dict
+        for region in unique_regions:
+            if region > 0:  # Skip background
+                adjacency[region] = set()
+        
+        # Method 1: Check within a small radius to jump over thin lines
+        search_radius = 10  # Adjust based on line thickness
+        edges_found = 0
+        
+        # For each region, find its boundary pixels
+        for region in unique_regions[1:]:  # Skip 0 (background)
+            # Find boundary pixels of this region
+            mask = (labeled_regions == region).astype(np.uint8)
+            
+            # Find contour of this region
+            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if not contours:
+                continue
                 
-                # Check 4-connected neighbors
-                for dy, dx in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-                    ny, nx = y + dy, x + dx
-                    if 0 <= ny < h and 0 <= nx < w:
-                        neighbor = int(labeled_regions[ny, nx])
-                        if neighbor != 0 and neighbor != current:
-                            adjacency[current].add(neighbor)
+            # Sample points along the contour
+            contour = contours[0]
+            for point in contour[::5]:  # Sample every 5th point for efficiency
+                x, y = point[0]
+                
+                # Look in a radius around this boundary point
+                for dy in range(-search_radius, search_radius + 1):
+                    for dx in range(-search_radius, search_radius + 1):
+                        if dx == 0 and dy == 0:
+                            continue
+                            
+                        ny, nx = y + dy, x + dx
+                        if 0 <= ny < h and 0 <= nx < w:
+                            neighbor = int(labeled_regions[ny, nx])
+                            if neighbor > 0 and neighbor != region:
+                                adjacency[region].add(neighbor)
+                                edges_found += 1
+        
+        # Debug output
+        print(f"Debug - Edges found: {edges_found}")
+        print(f"Debug - Adjacency dict: {dict((k, list(v)) for k, v in adjacency.items())}")
         
         return adjacency
