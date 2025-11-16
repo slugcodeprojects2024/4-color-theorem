@@ -6,6 +6,7 @@ import ResultViewer from './components/ResultViewer';
 import StyleSelector from './components/StyleSelector';
 import StainedGlassToggle from './components/StainedGlassToggle';
 import { processImage } from './services/api';
+import { applyStainedGlassEffect } from './effects/stainedGlassEffect';
 
 function App() {
   const [selectedImage, setSelectedImage] = useState(null);
@@ -33,8 +34,36 @@ function App() {
     setError(null);
 
     try {
-      const result = await processImage(selectedImage, selectedStyle, stainedGlassEnabled);
-      setProcessedImage(result.image);
+      // Always get colored image from backend (stained glass disabled on backend for speed)
+      const result = await processImage(selectedImage, selectedStyle, false);
+      
+      let finalImage = result.image;
+      
+      // Apply WebGL stained glass effect on frontend if enabled (GPU-accelerated)
+      if (stainedGlassEnabled) {
+        try {
+          console.log('Applying stained glass effect (intensity: 1.0)...');
+          console.log('Original image data URL length:', result.image.length);
+          
+          // Apply effect with high intensity for maximum visibility
+          finalImage = await applyStainedGlassEffect(result.image, 1.0);
+          
+          console.log('Stained glass effect applied successfully');
+          console.log('Final image data URL length:', finalImage.length);
+          
+          // Verify the image changed
+          if (finalImage === result.image) {
+            console.warn('Warning: Stained glass effect may not have been applied (images are identical)');
+          }
+        } catch (effectError) {
+          console.error('Stained glass effect failed:', effectError);
+          console.error('Error details:', effectError.stack);
+          // If effect fails, still show the colored image
+          finalImage = result.image;
+        }
+      }
+      
+      setProcessedImage(finalImage);
       setStats(result.stats);
     } catch (err) {
       setError(err.message || 'Failed to process image');

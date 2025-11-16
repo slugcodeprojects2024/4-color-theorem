@@ -11,10 +11,7 @@ export const processImage = async (imageFile, style = 'vibrant', stainedGlassEna
   const formData = new FormData();
   formData.append('file', imageFile);
   formData.append('style', style);
-  
-  if (stainedGlassEnabled) {
-    formData.append('stained_glass', 'true');
-  }
+  formData.append('stained_glass', stainedGlassEnabled ? 'true' : 'false');
 
   try {
     const response = await api.post('/api/process', formData, {

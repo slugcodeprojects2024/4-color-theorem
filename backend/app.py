@@ -1,5 +1,5 @@
 """FastAPI backend for 4-color theorem app."""
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -20,8 +20,8 @@ app = FastAPI(title="4-Color Theorem API")
 # Enable CORS for frontend development
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
-    allow_credentials=True,
+    allow_origins=["*"],  # Allow all origins for WSL compatibility
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -41,7 +41,8 @@ async def root():
 @app.post("/api/process")
 async def process_image(
     file: UploadFile = File(...),
-    style: str = "vibrant"
+    style: str = Form("vibrant"),
+    stained_glass: str = Form("false")
 ):
     """Process uploaded image through 4-color pipeline."""
     try:
@@ -56,15 +57,18 @@ async def process_image(
             image = image.convert('RGB')
         image_np = np.array(image)
         
+        # Convert stained_glass string to boolean
+        stained_glass_enabled = stained_glass.lower() in ("true", "1", "yes", "on")
+        
         # Process through pipeline
-        result = process_pipeline(image_np, style)
+        result = process_pipeline(image_np, style, stained_glass_enabled)
         
         return JSONResponse(content=result)
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-def process_pipeline(image_np: np.ndarray, style: str) -> Dict[str, Any]:
+def process_pipeline(image_np: np.ndarray, style: str, stained_glass_enabled: bool = False) -> Dict[str, Any]:
     """Main processing pipeline."""
     
     # Step 1: Detect regions
@@ -79,6 +83,11 @@ def process_pipeline(image_np: np.ndarray, style: str) -> Dict[str, Any]:
     
     # Step 4: Apply colors
     colored_image = apply_colors(labeled_regions, coloring, style)
+    
+    # Step 5: Apply stained glass effect if enabled
+    if stained_glass_enabled:
+        from effects.stained_glass import apply_stained_glass_effect
+        colored_image = apply_stained_glass_effect(colored_image, labeled_regions, intensity=0.8)
     
     # Convert result to base64
     result_pil = Image.fromarray(colored_image)
