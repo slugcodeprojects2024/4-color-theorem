@@ -86,8 +86,9 @@ def process_pipeline(image_np: np.ndarray, style: str, stained_glass_enabled: bo
     
     # Step 5: Apply stained glass effect if enabled
     if stained_glass_enabled:
-        from effects.stained_glass import apply_stained_glass_effect
-        colored_image = apply_stained_glass_effect(colored_image, labeled_regions, intensity=0.8)
+        from effects.stained_glass import apply_stained_glass
+        print("Applying stained glass effect...")
+        colored_image = apply_stained_glass(colored_image, labeled_regions, intensity=0.8)
     
     # Convert result to base64
     result_pil = Image.fromarray(colored_image)

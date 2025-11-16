@@ -1,367 +1,300 @@
-"""Apply stained glass effect to colored images using advanced image processing."""
-import numpy as np
+"""
+Stained Glass Effect for Backend Processing
+Creates authentic stained glass appearance with lead lines between regions
+"""
+
 import cv2
-from typing import Tuple
-import random
-from skimage import filters, morphology, exposure, feature
-from skimage.filters import gaussian, unsharp_mask
-from skimage.morphology import disk, square
+import numpy as np
+from typing import Tuple, Optional
+import logging
+
+logger = logging.getLogger(__name__)
 
 
-def apply_stained_glass_effect(
-    colored_image: np.ndarray,
-    labeled_regions: np.ndarray,
-    intensity: float = 0.8
-) -> np.ndarray:
+class StainedGlassEffect:
+    """Create authentic stained glass effect with lead lines and glass texture."""
+    
+    def __init__(self):
+        self.lead_color = (20, 20, 25)  # Dark gray/black for lead lines
+        self.lead_thickness = 3
+        
+    def apply_effect(self, 
+                    image: np.ndarray, 
+                    labeled_regions: Optional[np.ndarray] = None,
+                    intensity: float = 0.8) -> np.ndarray:
+        """
+        Apply stained glass effect to an image.
+        
+        Args:
+            image: Input image (RGB)
+            labeled_regions: Optional labeled regions array for accurate lead lines
+            intensity: Effect intensity (0.0 to 1.0)
+            
+        Returns:
+            Image with stained glass effect
+        """
+        result = image.copy()
+        h, w = result.shape[:2]
+        
+        # Step 1: Create lead lines
+        if labeled_regions is not None:
+            lead_lines, lead_alpha = self.create_lead_lines_from_regions(labeled_regions, intensity)
+        else:
+            lead_lines, lead_alpha = self.create_lead_lines_from_edges(result, intensity)
+        
+        # Step 2: Apply glass texture to the colored regions
+        result = self.apply_glass_texture(result, intensity)
+        
+        # Step 3: Add lighting effects
+        result = self.apply_lighting_effects(result, intensity)
+        
+        # Step 4: Overlay lead lines
+        result = self.overlay_lead_lines(result, (lead_lines, lead_alpha))
+        
+        # Step 5: Final glass effects
+        result = self.apply_final_effects(result, intensity)
+        
+        return result
+    
+    def create_lead_lines_from_regions(self, labeled_regions: np.ndarray, intensity: float):
+        """
+        Create lead lines from labeled regions (most accurate method).
+        """
+        h, w = labeled_regions.shape
+        lead_mask = np.zeros((h, w), dtype=np.uint8)
+        
+        # Find boundaries between different regions
+        # Use morphological gradient to detect region boundaries
+        kernel = cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3))
+        gradient = cv2.morphologyEx(labeled_regions.astype(np.uint8), cv2.MORPH_GRADIENT, kernel)
+        
+        # Threshold to create binary lead lines
+        _, lead_mask = cv2.threshold(gradient, 0, 255, cv2.THRESH_BINARY)
+        
+        # Dilate to make lead lines thicker
+        thickness_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, 
+                                                     (self.lead_thickness, self.lead_thickness))
+        lead_mask = cv2.dilate(lead_mask, thickness_kernel, iterations=1)
+        
+        # Apply Gaussian blur for softer edges
+        lead_mask = cv2.GaussianBlur(lead_mask, (5, 5), 1)
+        
+        # Create colored lead lines with metallic appearance
+        lead_lines = np.zeros((h, w, 3), dtype=np.uint8)
+        mask_3d = np.stack([lead_mask, lead_mask, lead_mask], axis=2)
+        
+        # Base lead color
+        lead_lines[mask_3d > 128] = self.lead_color
+        
+        # Add metallic highlights
+        highlight_mask = cv2.Laplacian(lead_mask, cv2.CV_64F)
+        highlight_mask = np.abs(highlight_mask)
+        highlight_mask = (highlight_mask * 0.3).astype(np.uint8)
+        
+        lead_lines[:, :, 0] = np.minimum(lead_lines[:, :, 0] + highlight_mask, 255)
+        lead_lines[:, :, 1] = np.minimum(lead_lines[:, :, 1] + highlight_mask, 255)
+        lead_lines[:, :, 2] = np.minimum(lead_lines[:, :, 2] + highlight_mask + 5, 255)  # Slight blue tint
+        
+        # Scale intensity
+        lead_alpha = (lead_mask.astype(np.float32) / 255.0) * intensity
+        
+        return lead_lines, lead_alpha
+    
+    def create_lead_lines_from_edges(self, image: np.ndarray, intensity: float) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Create lead lines using edge detection (fallback method).
+        """
+        gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+        
+        # Detect edges using Canny
+        edges = cv2.Canny(gray, 50, 150)
+        
+        # Dilate edges to make them thicker
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, 
+                                          (self.lead_thickness, self.lead_thickness))
+        thick_edges = cv2.dilate(edges, kernel, iterations=1)
+        
+        # Blur for softer appearance
+        thick_edges = cv2.GaussianBlur(thick_edges, (5, 5), 1)
+        
+        # Create colored lead lines
+        h, w = image.shape[:2]
+        lead_lines = np.zeros((h, w, 3), dtype=np.uint8)
+        mask_3d = np.stack([thick_edges, thick_edges, thick_edges], axis=2)
+        
+        lead_lines[mask_3d > 128] = self.lead_color
+        
+        # Alpha channel for blending
+        lead_alpha = (thick_edges.astype(np.float32) / 255.0) * intensity
+        
+        return lead_lines, lead_alpha
+    
+    def apply_glass_texture(self, image: np.ndarray, intensity: float) -> np.ndarray:
+        """
+        Apply glass-like texture to the image.
+        """
+        h, w = image.shape[:2]
+        result = image.copy().astype(np.float32)
+        
+        # Create glass texture using Perlin-like noise
+        texture = self.generate_glass_texture(w, h)
+        
+        # Apply texture as overlay
+        for c in range(3):
+            result[:, :, c] = result[:, :, c] * (1 - intensity * 0.3) + \
+                             texture * intensity * 0.3 * 255
+        
+        # Add subtle color variations (glass imperfections)
+        noise = np.random.normal(0, 10 * intensity, (h, w, 3))
+        result += noise
+        
+        # Add ripple effect (simulating hand-blown glass)
+        x, y = np.meshgrid(np.arange(w), np.arange(h))
+        ripple = np.sin(np.sqrt(x**2 + y**2) * 0.01) * 10 * intensity
+        result[:, :, :] += ripple[:, :, np.newaxis]
+        
+        return np.clip(result, 0, 255).astype(np.uint8)
+    
+    def generate_glass_texture(self, width: int, height: int) -> np.ndarray:
+        """
+        Generate a glass-like texture pattern.
+        """
+        # Create base noise
+        texture = np.zeros((height, width), dtype=np.float32)
+        
+        # Multi-scale noise for realistic glass texture
+        scales = [4, 8, 16, 32]
+        weights = [0.5, 0.25, 0.15, 0.1]
+        
+        for scale, weight in zip(scales, weights):
+            # Create noise at this scale
+            noise = np.random.randn(height // scale + 1, width // scale + 1)
+            # Upscale to full resolution
+            noise_full = cv2.resize(noise, (width, height), interpolation=cv2.INTER_CUBIC)
+            texture += noise_full * weight
+        
+        # Normalize to 0-1 range
+        texture = (texture - texture.min()) / (texture.max() - texture.min() + 1e-8)
+        
+        # Apply smoothing for glass-like appearance
+        texture = cv2.GaussianBlur(texture, (5, 5), 1)
+        
+        return texture
+    
+    def apply_lighting_effects(self, image: np.ndarray, intensity: float) -> np.ndarray:
+        """
+        Apply lighting effects to simulate light passing through glass.
+        """
+        h, w = image.shape[:2]
+        result = image.copy().astype(np.float32)
+        
+        # Create light gradient (simulating directional light)
+        light_gradient = np.zeros((h, w, 3), dtype=np.float32)
+        
+        # Top-left light source
+        for y in range(h):
+            for x in range(w):
+                distance = np.sqrt((x / w) ** 2 + (y / h) ** 2)
+                brightness = max(0, 1 - distance * 0.7)
+                light_gradient[y, x] = [255, 250, 200] * brightness * intensity * 0.3
+        
+        # Apply light gradient with soft light blending
+        result = cv2.addWeighted(result, 1.0, light_gradient, 0.5, 0)
+        
+        # Add specular highlights
+        highlights = self.create_specular_highlights(w, h, intensity)
+        result = cv2.add(result, highlights)
+        
+        return np.clip(result, 0, 255).astype(np.uint8)
+    
+    def create_specular_highlights(self, width: int, height: int, intensity: float) -> np.ndarray:
+        """
+        Create specular highlights for glass surface.
+        """
+        highlights = np.zeros((height, width, 3), dtype=np.float32)
+        
+        # Add random bright spots
+        num_highlights = int(5 + intensity * 10)
+        for _ in range(num_highlights):
+            cx = np.random.randint(0, width)
+            cy = np.random.randint(0, height)
+            radius = np.random.randint(20, 100)
+            
+            # Create radial gradient for highlight
+            y, x = np.ogrid[:height, :width]
+            mask = (x - cx) ** 2 + (y - cy) ** 2 <= radius ** 2
+            
+            # Gaussian falloff
+            distances = np.sqrt((x - cx) ** 2 + (y - cy) ** 2)
+            falloff = np.exp(-(distances ** 2) / (radius ** 2))
+            
+            highlight_intensity = falloff * intensity * 50
+            highlights[:, :, 0] += highlight_intensity
+            highlights[:, :, 1] += highlight_intensity
+            highlights[:, :, 2] += highlight_intensity * 1.1  # Slight blue tint
+        
+        return highlights
+    
+    def overlay_lead_lines(self, image: np.ndarray, lead_data: Tuple[np.ndarray, np.ndarray]) -> np.ndarray:
+        """
+        Overlay lead lines onto the image.
+        """
+        lead_lines, lead_alpha = lead_data
+        result = image.copy().astype(np.float32)
+        
+        # Expand alpha to 3 channels
+        alpha_3d = np.stack([lead_alpha, lead_alpha, lead_alpha], axis=2)
+        
+        # Blend lead lines with image
+        result = result * (1 - alpha_3d) + lead_lines.astype(np.float32) * alpha_3d
+        
+        return result.astype(np.uint8)
+    
+    def apply_final_effects(self, image: np.ndarray, intensity: float) -> np.ndarray:
+        """
+        Apply final effects for authentic stained glass appearance.
+        """
+        result = image.copy()
+        h, w = result.shape[:2]
+        
+        # Increase color saturation (stained glass has rich colors)
+        result = cv2.cvtColor(result, cv2.COLOR_RGB2HSV).astype(np.float32)
+        result[:, :, 1] *= (1 + intensity * 0.3)  # Increase saturation
+        result[:, :, 2] *= (1 + intensity * 0.1)  # Slight brightness boost
+        result = np.clip(result, 0, 255).astype(np.uint8)
+        result = cv2.cvtColor(result, cv2.COLOR_HSV2RGB)
+        
+        # Add vignette effect (darker edges)
+        vignette = np.ones((h, w), dtype=np.float32)
+        cv, ch = w // 2, h // 2
+        for y in range(h):
+            for x in range(w):
+                distance = np.sqrt((x - cv) ** 2 + (y - ch) ** 2)
+                max_dist = np.sqrt(cv ** 2 + ch ** 2)
+                vignette[y, x] = 1 - (distance / max_dist) * intensity * 0.3
+        
+        vignette = np.stack([vignette, vignette, vignette], axis=2)
+        result = (result.astype(np.float32) * vignette).astype(np.uint8)
+        
+        # Final contrast adjustment
+        result = cv2.convertScaleAbs(result, alpha=1 + intensity * 0.2, beta=0)
+        
+        return result
+
+
+def apply_stained_glass(image: np.ndarray, 
+                        labeled_regions: Optional[np.ndarray] = None,
+                        intensity: float = 0.8) -> np.ndarray:
     """
-    Apply a realistic stained glass effect to the colored image.
+    Convenience function to apply stained glass effect.
     
     Args:
-        colored_image: RGB image with colored regions (uint8, 0-255)
-        labeled_regions: Labeled regions array (same shape as image, single channel)
-        intensity: Intensity of the effect (0.0 to 1.0)
+        image: Input image (RGB)
+        labeled_regions: Optional labeled regions for accurate lead lines
+        intensity: Effect intensity (0.0 to 1.0)
         
     Returns:
-        Stained glass effect applied image (RGB, uint8)
+        Image with stained glass effect
     """
-    result = colored_image.copy().astype(np.float32)
-    h, w = result.shape[:2]
-    
-    # Set random seed for reproducibility
-    np.random.seed(42)
-    random.seed(42)
-    
-    # Fast, lightweight backend version - detailed effects moved to frontend WebGL
-    # Step 1: Quick texture (simplified, faster)
-    result = _add_glass_texture_fast(result, intensity)
-    
-    # Step 2: Basic lighting (simplified)
-    result = _add_lighting_effects_fast(result, labeled_regions, intensity)
-    
-    # Step 3: Quick edge highlights (basic)
-    result = _add_edge_highlights_fast(result, labeled_regions, intensity)
-    
-    # Ensure values are in valid range
-    result = np.clip(result, 0, 255).astype(np.uint8)
-    
-    return result
-
-
-def _add_glass_texture(image: np.ndarray, intensity: float) -> np.ndarray:
-    """
-    Add glass-like texture with irregular light patterns using advanced filtering.
-    Uses Perlin-like noise and bilateral filtering for realistic glass texture.
-    """
-    h, w = image.shape[:2]
-    
-    # Convert to float for processing
-    result = image.astype(np.float32)
-    
-    # Create multi-scale Perlin-like noise for organic glass texture
-    texture = np.zeros((h, w, 3), dtype=np.float32)
-    
-    # Large-scale variations (like light passing through thick glass)
-    # Use Gaussian blur on noise for smooth, organic patterns
-    noise_large = np.random.rand(h // 8, w // 8, 3).astype(np.float32)
-    noise_large = cv2.resize(noise_large, (w, h), interpolation=cv2.INTER_CUBIC)
-    noise_large = gaussian(noise_large, sigma=20, channel_axis=2, preserve_range=True)
-    texture += noise_large * 20 * intensity
-    
-    # Medium-scale variations (glass imperfections and bubbles)
-    noise_medium = np.random.rand(h // 16, w // 16, 3).astype(np.float32)
-    noise_medium = cv2.resize(noise_medium, (w, h), interpolation=cv2.INTER_CUBIC)
-    noise_medium = gaussian(noise_medium, sigma=8, channel_axis=2, preserve_range=True)
-    texture += noise_medium * 12 * intensity
-    
-    # Fine-scale noise (surface texture and ripples)
-    noise_fine = np.random.rand(h, w, 3).astype(np.float32)
-    noise_fine = gaussian(noise_fine, sigma=2, channel_axis=2, preserve_range=True)
-    texture += noise_fine * 6 * intensity
-    
-    # Apply texture with edge-preserving blending using bilateral filter
-    # This maintains sharp edges while adding texture
-    result_with_texture = result + texture
-    result_with_texture = np.clip(result_with_texture, 0, 255).astype(np.uint8)
-    
-    # Use bilateral filter to blend texture while preserving edges
-    result = cv2.bilateralFilter(result_with_texture, d=9, sigmaColor=75, sigmaSpace=75)
-    result = result.astype(np.float32)
-    
-    return result
-
-
-def _add_lighting_effects(
-    image: np.ndarray,
-    labeled_regions: np.ndarray,
-    intensity: float
-) -> np.ndarray:
-    """
-    Add advanced lighting effects: highlights, shadows, and Fresnel effect.
-    Uses Gaussian gradients and exposure adjustments for realistic lighting.
-    """
-    h, w = image.shape[:2]
-    result = image.copy()
-    
-    # Create directional lighting gradient (light from top-left)
-    y_coords, x_coords = np.meshgrid(np.arange(h), np.arange(w), indexing='ij')
-    
-    # Normalize coordinates to [-1, 1]
-    x_norm = (x_coords - w / 2) / (w / 2)
-    y_norm = (y_coords - h / 2) / (h / 2)
-    
-    # Create smooth lighting gradient using Gaussian-like falloff
-    light_gradient = 1.0 - np.sqrt(x_norm**2 + y_norm**2) * 0.2 * intensity
-    light_gradient = np.clip(light_gradient, 0.7, 1.3)
-    
-    # Add directional component (brighter in top-left)
-    directional = 1.0 + (-x_norm * 0.3 - y_norm * 0.3) * intensity * 0.4
-    lighting = light_gradient * directional
-    
-    # Add per-region lighting variation (each glass piece has different properties)
-    unique_regions = np.unique(labeled_regions)
-    np.random.seed(42)  # Reproducible
-    
-    for region_id in unique_regions:
-        if region_id == 0:
-            continue
-        
-        mask = labeled_regions == region_id
-        if np.sum(mask) == 0:
-            continue
-        
-        # Random lighting variation (thickness, clarity, etc.)
-        region_lighting = 1.0 + (np.random.rand() - 0.5) * 0.25 * intensity
-        
-        # Smooth the lighting variation within region using Gaussian
-        region_mask_float = mask.astype(np.float32)
-        smoothed_mask = gaussian(region_mask_float, sigma=5, preserve_range=True)
-        smoothed_mask = smoothed_mask / smoothed_mask.max() if smoothed_mask.max() > 0 else smoothed_mask
-        
-        lighting[mask] = lighting[mask] * (1.0 + (region_lighting - 1.0) * smoothed_mask[mask])
-    
-    # Apply lighting with exposure adjustment for realism
-    result = result * lighting[:, :, np.newaxis]
-    
-    # Add Fresnel effect (edges are brighter due to light refraction)
-    # This is a key characteristic of glass
-    edge_distance = cv2.distanceTransform(
-        (labeled_regions > 0).astype(np.uint8),
-        cv2.DIST_L2,
-        5
-    )
-    # Normalize and invert (closer to edge = brighter)
-    edge_distance_norm = 1.0 - np.clip(edge_distance / 10.0, 0, 1)
-    fresnel_effect = 1.0 + edge_distance_norm * 0.15 * intensity
-    
-    result = result * fresnel_effect[:, :, np.newaxis]
-    result = np.clip(result, 0, 255)
-    
-    return result
-
-
-def _add_color_variation(
-    image: np.ndarray,
-    labeled_regions: np.ndarray,
-    intensity: float
-) -> np.ndarray:
-    """
-    Add color variation within regions to simulate the natural variation in stained glass.
-    Real stained glass has slight color variations and gradients.
-    """
-    result = image.copy()
-    h, w = image.shape[:2]
-    
-    unique_regions = np.unique(labeled_regions)
-    np.random.seed(42)  # Reproducible randomness
-    
-    for region_id in unique_regions:
-        if region_id == 0:  # Skip background
-            continue
-        
-        mask = labeled_regions == region_id
-        if np.sum(mask) == 0:
-            continue
-        
-        # Get region bounds
-        region_coords = np.where(mask)
-        if len(region_coords[0]) == 0:
-            continue
-        
-        min_y, max_y = region_coords[0].min(), region_coords[0].max()
-        min_x, max_x = region_coords[1].min(), region_coords[1].max()
-        
-        # Create gradient within region (simulating light passing through)
-        region_h, region_w = max_y - min_y + 1, max_x - min_x + 1
-        
-        # Radial gradient from center (like light source)
-        center_y, center_x = (min_y + max_y) / 2, (min_x + max_x) / 2
-        y_grad, x_grad = np.meshgrid(
-            np.arange(min_y, max_y + 1),
-            np.arange(min_x, max_x + 1),
-            indexing='ij'
-        )
-        
-        # Distance from center
-        dist = np.sqrt((y_grad - center_y)**2 + (x_grad - center_x)**2)
-        max_dist = np.sqrt(region_h**2 + region_w**2) / 2
-        gradient = 1.0 - (dist / (max_dist + 1)) * 0.15 * intensity
-        
-        # Add subtle color shift (like real glass)
-        color_shift = (np.random.rand(3) - 0.5) * 10 * intensity
-        
-        # Apply to region
-        region_mask = mask[min_y:max_y+1, min_x:max_x+1]
-        if region_mask.shape[0] > 0 and region_mask.shape[1] > 0:
-            gradient_masked = gradient[region_mask]
-            for c in range(3):
-                result[min_y:max_y+1, min_x:max_x+1, c][region_mask] = \
-                    result[min_y:max_y+1, min_x:max_x+1, c][region_mask] * gradient_masked + \
-                    color_shift[c] * gradient_masked
-    
-    result = np.clip(result, 0, 255)
-    return result
-
-
-def _add_edge_highlights(
-    image: np.ndarray,
-    labeled_regions: np.ndarray,
-    intensity: float
-) -> np.ndarray:
-    """
-    Add advanced edge highlights using morphological operations and distance transforms.
-    Simulates lead came (metal framework) and light refraction at edges.
-    """
-    result = image.copy()
-    h, w = image.shape[:2]
-    
-    # Use Canny edge detection on region boundaries for cleaner edges
-    # Create a mask of region boundaries
-    region_boundaries = np.zeros((h, w), dtype=np.uint8)
-    
-    # Find edges using morphological gradient (more accurate than pixel checking)
-    for region_id in np.unique(labeled_regions):
-        if region_id == 0:
-            continue
-        
-        mask = (labeled_regions == region_id).astype(np.uint8) * 255
-        # Morphological gradient finds edges
-        kernel = disk(2)
-        gradient = morphology.binary_dilation(mask, kernel).astype(np.uint8) - \
-                   morphology.binary_erosion(mask, kernel).astype(np.uint8)
-        region_boundaries = cv2.bitwise_or(region_boundaries, gradient)
-    
-    # Use distance transform for smooth edge falloff
-    dist_transform = cv2.distanceTransform(
-        255 - region_boundaries,
-        cv2.DIST_L2,
-        5
-    )
-    
-    # Create smooth highlight gradient (brighter closer to edge)
-    edge_highlight_map = np.clip(1.0 - dist_transform / 8.0, 0, 1)
-    edge_highlight_map = gaussian(edge_highlight_map, sigma=1.5, preserve_range=True)
-    
-    # Add bright highlight to edges (light refraction)
-    highlight_strength = 0.5 * intensity
-    for c in range(3):
-        result[:, :, c] = np.minimum(
-            result[:, :, c] + edge_highlight_map * 255 * highlight_strength,
-            255
-        )
-    
-    # Add lead came (dark center line) using morphological operations
-    # Thicken the boundary, then erode to get center
-    kernel_lead = disk(2)
-    thick_boundaries = morphology.binary_dilation(
-        (region_boundaries > 0).astype(bool),
-        kernel_lead
-    )
-    lead_center = morphology.binary_erosion(
-        thick_boundaries,
-        kernel_lead
-    )
-    
-    # Darken the lead came
-    lead_strength = 0.4 * intensity
-    lead_darkening = np.array([40, 40, 40], dtype=np.float32) * lead_strength
-    
-    for c in range(3):
-        result[:, :, c][lead_center] = np.maximum(
-            result[:, :, c][lead_center] - lead_darkening[c],
-            0
-        )
-    
-    result = np.clip(result, 0, 255)
-    return result
-
-
-def _add_glass_texture_fast(image: np.ndarray, intensity: float) -> np.ndarray:
-    """Fast, simplified texture addition."""
-    h, w = image.shape[:2]
-    result = image.copy()
-    
-    # Simple noise texture (much faster than multi-scale)
-    noise = np.random.rand(h, w, 3).astype(np.float32) * 10 * intensity
-    result = result + noise
-    result = np.clip(result, 0, 255)
-    
-    return result
-
-
-def _add_lighting_effects_fast(
-    image: np.ndarray,
-    labeled_regions: np.ndarray,
-    intensity: float
-) -> np.ndarray:
-    """Fast, simplified lighting effects."""
-    h, w = image.shape[:2]
-    result = image.copy()
-    
-    # Simple directional lighting gradient
-    y_coords, x_coords = np.meshgrid(np.arange(h), np.arange(w), indexing='ij')
-    x_norm = (x_coords - w / 2) / (w / 2)
-    y_norm = (y_coords - h / 2) / (h / 2)
-    
-    # Simple lighting
-    lighting = 1.0 + (-x_norm * 0.2 - y_norm * 0.2) * intensity * 0.3
-    result = result * lighting[:, :, np.newaxis]
-    result = np.clip(result, 0, 255)
-    
-    return result
-
-
-def _add_edge_highlights_fast(
-    image: np.ndarray,
-    labeled_regions: np.ndarray,
-    intensity: float
-) -> np.ndarray:
-    """Fast, simplified edge highlights."""
-    result = image.copy()
-    h, w = image.shape[:2]
-    
-    # Simple edge detection using difference
-    edge_mask = np.zeros((h, w), dtype=bool)
-    for y in range(1, h - 1):
-        for x in range(1, w - 1):
-            current = labeled_regions[y, x]
-            if (labeled_regions[y-1, x] != current or
-                labeled_regions[y+1, x] != current or
-                labeled_regions[y, x-1] != current or
-                labeled_regions[y, x+1] != current):
-                if current != 0:
-                    edge_mask[y, x] = True
-    
-    # Simple highlight
-    kernel = np.ones((2, 2), np.uint8)
-    edge_dilated = cv2.dilate(edge_mask.astype(np.uint8), kernel, iterations=1).astype(bool)
-    
-    highlight = 255 * 0.3 * intensity
-    for c in range(3):
-        result[:, :, c][edge_dilated] = np.minimum(
-            result[:, :, c][edge_dilated] + highlight,
-            255
-        )
-    
-    result = np.clip(result, 0, 255)
-    return result
-
+    effect = StainedGlassEffect()
+    return effect.apply_effect(image, labeled_regions, intensity)
