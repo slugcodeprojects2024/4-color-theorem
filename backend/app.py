@@ -10,10 +10,11 @@ import base64
 import cv2
 from typing import Dict, Any
 
-# Import our core modules (we'll create these next)
+# Import our core modules
 from core.region_detection import RegionDetector
 from core.graph_builder import GraphBuilder
 from core.four_color_solver import FourColorSolver
+from core.photo_to_lineart import convert_photo_to_lineart
 
 app = FastAPI(title="4-Color Theorem API")
 
@@ -42,7 +43,11 @@ async def root():
 async def process_image(
     file: UploadFile = File(...),
     style: str = Form("vibrant"),
-    stained_glass: str = Form("false")
+    stained_glass: str = Form("false"),
+    convert_to_lineart: str = Form("false"),
+    line_thickness: str = Form("medium"),
+    detail_level: str = Form("detailed"),
+    contrast: str = Form("1.0")
 ):
     """Process uploaded image through 4-color pipeline."""
     try:
@@ -57,19 +62,89 @@ async def process_image(
             image = image.convert('RGB')
         image_np = np.array(image)
         
-        # Convert stained_glass string to boolean
+        # Convert form parameters
         stained_glass_enabled = stained_glass.lower() in ("true", "1", "yes", "on")
+        convert_lineart = convert_to_lineart.lower() in ("true", "1", "yes", "on")
+        contrast_float = float(contrast) if contrast else 1.0
         
         # Process through pipeline
-        result = process_pipeline(image_np, style, stained_glass_enabled)
+        result = process_pipeline(
+            image_np, 
+            style, 
+            stained_glass_enabled,
+            convert_lineart=convert_lineart,
+            line_thickness=line_thickness,
+            detail_level=detail_level,
+            contrast=contrast_float
+        )
         
         return JSONResponse(content=result)
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-def process_pipeline(image_np: np.ndarray, style: str, stained_glass_enabled: bool = False) -> Dict[str, Any]:
+@app.post("/api/preview-lineart")
+async def preview_lineart(
+    file: UploadFile = File(...),
+    line_thickness: str = Form("medium"),
+    detail_level: str = Form("detailed"),
+    contrast: str = Form("1.0")
+):
+    """Preview line art conversion without full processing."""
+    try:
+        contents = await file.read()
+        if not contents:
+            raise HTTPException(status_code=400, detail="Empty file")
+        
+        image = Image.open(io.BytesIO(contents))
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
+        image_np = np.array(image)
+        
+        contrast_float = float(contrast) if contrast else 1.0
+        
+        # Convert to line art
+        line_art = convert_photo_to_lineart(
+            image_np,
+            line_thickness=line_thickness,
+            detail_level=detail_level,
+            contrast=contrast_float
+        )
+        
+        # Convert to base64
+        result_pil = Image.fromarray(line_art)
+        buffered = io.BytesIO()
+        result_pil.save(buffered, format="PNG")
+        img_base64 = base64.b64encode(buffered.getvalue()).decode()
+        
+        return JSONResponse(content={
+            "success": True,
+            "image": f"data:image/png;base64,{img_base64}"
+        })
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+def process_pipeline(
+    image_np: np.ndarray, 
+    style: str, 
+    stained_glass_enabled: bool = False,
+    convert_lineart: bool = False,
+    line_thickness: str = 'medium',
+    detail_level: str = 'detailed',
+    contrast: float = 1.0
+) -> Dict[str, Any]:
     """Main processing pipeline."""
+    
+    # Step 0: Convert photo to line art if requested
+    if convert_lineart:
+        print(f"Converting photo to line art (thickness: {line_thickness}, detail: {detail_level}, contrast: {contrast})")
+        image_np = convert_photo_to_lineart(
+            image_np,
+            line_thickness=line_thickness,
+            detail_level=detail_level,
+            contrast=contrast
+        )
     
     # Step 1: Detect regions
     labeled_regions, contours, stats = region_detector.detect_regions(image_np)

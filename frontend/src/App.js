@@ -5,6 +5,7 @@ import ProgressIndicator from './components/ProgressIndicator';
 import ResultViewer from './components/ResultViewer';
 import StyleSelector from './components/StyleSelector';
 import StainedGlassToggle from './components/StainedGlassToggle';
+import LineArtConverter from './components/LineArtConverter';
 import { processImage } from './services/api';
 import { applyStainedGlassEffect } from './effects/stainedGlassEffect';
 
@@ -14,6 +15,12 @@ function App() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [selectedStyle, setSelectedStyle] = useState('vibrant');
   const [stainedGlassEnabled, setStainedGlassEnabled] = useState(false);
+  const [lineArtEnabled, setLineArtEnabled] = useState(false);
+  const [lineArtSettings, setLineArtSettings] = useState({
+    lineThickness: 'medium',
+    detailLevel: 'detailed',
+    contrast: 1.0
+  });
   const [stats, setStats] = useState(null);
   const [error, setError] = useState(null);
 
@@ -34,8 +41,19 @@ function App() {
     setError(null);
 
     try {
-      // Always get colored image from backend (stained glass disabled on backend for speed)
-      const result = await processImage(selectedImage, selectedStyle, false);
+      // Prepare line art settings if enabled
+      const lineArtConfig = lineArtEnabled ? {
+        enabled: true,
+        ...lineArtSettings
+      } : null;
+      
+      // Process image with all settings
+      const result = await processImage(
+        selectedImage, 
+        selectedStyle, 
+        false, // Stained glass handled on frontend
+        lineArtConfig
+      );
       
       let finalImage = result.image;
       
@@ -81,6 +99,14 @@ function App() {
     setStainedGlassEnabled(enabled);
   };
 
+  const handleLineArtToggle = (enabled) => {
+    setLineArtEnabled(enabled);
+  };
+
+  const handleLineArtSettingsChange = (newSettings) => {
+    setLineArtSettings(newSettings);
+  };
+
   return (
     <div className="App">
       <header className="App-header">
@@ -108,6 +134,12 @@ function App() {
             <StyleSelector 
               selectedStyle={selectedStyle} 
               onStyleChange={handleStyleChange} 
+            />
+            <LineArtConverter
+              enabled={lineArtEnabled}
+              onToggle={handleLineArtToggle}
+              settings={lineArtSettings}
+              onSettingsChange={handleLineArtSettingsChange}
             />
             <StainedGlassToggle 
               enabled={stainedGlassEnabled} 
