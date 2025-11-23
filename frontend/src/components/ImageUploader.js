@@ -8,18 +8,64 @@ function ImageUploader({ onImageSelect }) {
     if (file) {
       // Validate file type
       if (!file.type.startsWith('image/')) {
-        alert('Please select an image file');
+        alert('Please select an image file (PNG, JPG, or JPEG)');
         return;
       }
-      onImageSelect(file);
+      
+      // Validate file size (10MB max)
+      const maxSizeMB = 10;
+      const maxSizeBytes = maxSizeMB * 1024 * 1024;
+      if (file.size > maxSizeBytes) {
+        alert(`Image file too large (${(file.size / 1024 / 1024).toFixed(1)}MB). Maximum size is ${maxSizeMB}MB.`);
+        return;
+      }
+      
+      // Validate image dimensions by loading it
+      const img = new Image();
+      img.onload = () => {
+        const maxDimension = 4000;
+        if (img.width > maxDimension || img.height > maxDimension) {
+          alert(`Image dimensions too large (${img.width}x${img.height}). Maximum is ${maxDimension}x${maxDimension}px. The image will be automatically resized.`);
+        }
+        onImageSelect(file);
+      };
+      img.onerror = () => {
+        alert('Invalid image file. Please use a valid PNG, JPG, or JPEG image.');
+      };
+      img.src = URL.createObjectURL(file);
     }
   };
 
   const handleDrop = (event) => {
     event.preventDefault();
     const file = event.dataTransfer.files[0];
-    if (file && file.type.startsWith('image/')) {
-      onImageSelect(file);
+    if (file) {
+      if (!file.type.startsWith('image/')) {
+        alert('Please drop an image file (PNG, JPG, or JPEG)');
+        return;
+      }
+      
+      // Validate file size
+      const maxSizeMB = 10;
+      const maxSizeBytes = maxSizeMB * 1024 * 1024;
+      if (file.size > maxSizeBytes) {
+        alert(`Image file too large (${(file.size / 1024 / 1024).toFixed(1)}MB). Maximum size is ${maxSizeMB}MB.`);
+        return;
+      }
+      
+      // Validate dimensions
+      const img = new Image();
+      img.onload = () => {
+        const maxDimension = 4000;
+        if (img.width > maxDimension || img.height > maxDimension) {
+          alert(`Image dimensions too large (${img.width}x${img.height}). Maximum is ${maxDimension}x${maxDimension}px. The image will be automatically resized.`);
+        }
+        onImageSelect(file);
+      };
+      img.onerror = () => {
+        alert('Invalid image file. Please use a valid PNG, JPG, or JPEG image.');
+      };
+      img.src = URL.createObjectURL(file);
     }
   };
 

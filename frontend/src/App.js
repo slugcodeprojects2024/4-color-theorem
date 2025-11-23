@@ -84,7 +84,20 @@ function App() {
       setProcessedImage(finalImage);
       setStats(result.stats);
     } catch (err) {
-      setError(err.message || 'Failed to process image');
+      let errorMessage = err.message || 'Failed to process image';
+      
+      // Provide helpful error messages
+      if (errorMessage.includes('too large') || errorMessage.includes('size')) {
+        errorMessage = 'Image is too large. Please use an image smaller than 10MB or 4000x4000px.';
+      } else if (errorMessage.includes('format') || errorMessage.includes('Invalid')) {
+        errorMessage = 'Invalid image format. Please use PNG, JPG, or JPEG.';
+      } else if (errorMessage.includes('timeout') || errorMessage.includes('long')) {
+        errorMessage = 'Processing took too long. Try a smaller image or disable some effects.';
+      } else if (errorMessage.includes('Network')) {
+        errorMessage = 'Network error. Please check your connection and ensure the server is running.';
+      }
+      
+      setError(errorMessage);
       console.error('Processing error:', err);
     } finally {
       setIsProcessing(false);

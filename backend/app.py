@@ -8,13 +8,17 @@ from PIL import Image
 import io
 import base64
 import cv2
-from typing import Dict, Any
+from typing import Dict, Any, Optional
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Import our core modules
 from core.region_detection import RegionDetector
 from core.graph_builder import GraphBuilder
 from core.four_color_solver import FourColorSolver
 from core.photo_to_lineart import convert_photo_to_lineart
+from utils.image_utils import optimize_image_size, validate_image_file, upscale_image
 
 app = FastAPI(title="4-Color Theorem API")
 
@@ -55,12 +59,20 @@ async def process_image(
         contents = await file.read()
         if not contents:
             raise HTTPException(status_code=400, detail="Empty file")
+        
+        # Validate image file
+        is_valid, error_msg = validate_image_file(contents)
+        if not is_valid:
+            raise HTTPException(status_code=400, detail=error_msg)
             
         # Convert to numpy array
         image = Image.open(io.BytesIO(contents))
         if image.mode != 'RGB':
             image = image.convert('RGB')
         image_np = np.array(image)
+        
+        # Optimize image size for processing
+        image_np, size_metadata = optimize_image_size(image_np, max_dimension=2000)
         
         # Convert form parameters
         stained_glass_enabled = stained_glass.lower() in ("true", "1", "yes", "on")
@@ -75,13 +87,28 @@ async def process_image(
             convert_lineart=convert_lineart,
             line_thickness=line_thickness,
             detail_level=detail_level,
-            contrast=contrast_float
+            contrast=contrast_float,
+            size_metadata=size_metadata
         )
         
         return JSONResponse(content=result)
         
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        error_detail = str(e)
+        logger.error(f"Processing error: {error_detail}\n{traceback.format_exc()}")
+        
+        # Provide helpful error messages
+        if "timeout" in error_detail.lower() or "time" in error_detail.lower():
+            error_detail = "Processing took too long. Try a smaller image or simpler settings."
+        elif "memory" in error_detail.lower():
+            error_detail = "Image too large for processing. Please resize and try again."
+        elif "format" in error_detail.lower() or "decode" in error_detail.lower():
+            error_detail = "Invalid image format. Please use PNG, JPG, or JPEG."
+        
+        raise HTTPException(status_code=500, detail=error_detail)
 
 @app.post("/api/preview-lineart")
 async def preview_lineart(
@@ -132,7 +159,8 @@ def process_pipeline(
     convert_lineart: bool = False,
     line_thickness: str = 'medium',
     detail_level: str = 'detailed',
-    contrast: float = 1.0
+    contrast: float = 1.0,
+    size_metadata: Optional[Dict] = None
 ) -> Dict[str, Any]:
     """Main processing pipeline."""
     
@@ -165,21 +193,34 @@ def process_pipeline(
         print("Applying stained glass effect...")
         colored_image = apply_stained_glass(colored_image, labeled_regions, intensity=0.8)
     
+    # Upscale result if image was resized for processing
+    if size_metadata and size_metadata.get('resized', False):
+        scale_factor = 1.0 / size_metadata['scale_factor']
+        colored_image = upscale_image(colored_image, scale_factor, method='lanczos')
+    
     # Convert result to base64
     result_pil = Image.fromarray(colored_image)
     buffered = io.BytesIO()
     result_pil.save(buffered, format="PNG")
     img_base64 = base64.b64encode(buffered.getvalue()).decode()
     
+    stats_dict = {
+        "regions": len(contours),
+        "colors_used": len(set(coloring.values())),
+        "graph_nodes": graph.number_of_nodes(),
+        "graph_edges": graph.number_of_edges()
+    }
+    
+    # Add size metadata if available
+    if size_metadata:
+        stats_dict["image_resized"] = size_metadata.get('resized', False)
+        stats_dict["original_size"] = size_metadata.get('original_size')
+        stats_dict["processed_size"] = size_metadata.get('final_size')
+    
     return {
         "success": True,
         "image": f"data:image/png;base64,{img_base64}",
-        "stats": {
-            "regions": len(contours),
-            "colors_used": len(set(coloring.values())),
-            "graph_nodes": graph.number_of_nodes(),
-            "graph_edges": graph.number_of_edges()
-        }
+        "stats": stats_dict
     }
 
 def apply_colors(labeled_regions: np.ndarray, coloring: Dict[int, int], style: str) -> np.ndarray:
@@ -209,6 +250,30 @@ def apply_colors(labeled_regions: np.ndarray, coloring: Dict[int, int], style: s
             [128, 128, 128], # Gray
             [192, 192, 192], # Light Gray
             [224, 224, 224]  # Very Light Gray
+        ],
+        "ocean": [
+            [0, 119, 190],   # Ocean Blue
+            [64, 224, 208],  # Turquoise
+            [0, 191, 255],    # Deep Sky Blue
+            [25, 25, 112]     # Midnight Blue
+        ],
+        "sunset": [
+            [255, 140, 0],   # Dark Orange
+            [255, 20, 147],   # Deep Pink
+            [255, 69, 0],     # Red Orange
+            [255, 192, 203]  # Pink
+        ],
+        "forest": [
+            [34, 139, 34],   # Forest Green
+            [85, 107, 47],   # Dark Olive Green
+            [107, 142, 35],  # Olive Drab
+            [139, 90, 43]    # Saddle Brown
+        ],
+        "neon": [
+            [255, 0, 255],   # Magenta
+            [0, 255, 255],   # Cyan
+            [255, 255, 0],   # Yellow
+            [0, 255, 0]      # Lime
         ]
     }
     

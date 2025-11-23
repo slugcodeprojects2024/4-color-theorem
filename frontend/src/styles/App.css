@@ -232,6 +232,37 @@ body {
 .progress-indicator p {
   color: #666;
   font-size: 1rem;
+  margin-bottom: 15px;
+}
+
+.progress-bar-container {
+  width: 100%;
+  max-width: 400px;
+  height: 8px;
+  background: #e0e0e0;
+  border-radius: 4px;
+  margin: 15px auto;
+  overflow: hidden;
+}
+
+.progress-bar {
+  height: 100%;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border-radius: 4px;
+  transition: width 0.3s ease;
+  animation: pulse 2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+.progress-text {
+  color: #667eea;
+  font-weight: 600;
+  font-size: 0.9rem;
+  margin-top: 5px;
 }
 
 .error-message {
@@ -292,6 +323,12 @@ body {
 
 .result-stats li:last-child {
   border-bottom: none;
+}
+
+.result-stats li.info-note {
+  color: #667eea;
+  font-style: italic;
+  font-size: 0.9rem;
 }
 
 .download-button {

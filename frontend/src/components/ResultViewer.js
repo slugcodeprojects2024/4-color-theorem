@@ -1,14 +1,7 @@
 import React from 'react';
+import ExportOptions from './ExportOptions';
 
 function ResultViewer({ image, stats }) {
-  const handleDownload = () => {
-    const link = document.createElement('a');
-    link.href = image;
-    link.download = 'colored-image.png';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
 
   return (
     <div className="result-viewer">
@@ -25,13 +18,17 @@ function ResultViewer({ image, stats }) {
             <li>Colors used: {stats.colors_used}</li>
             <li>Graph nodes: {stats.graph_nodes}</li>
             <li>Graph edges: {stats.graph_edges}</li>
+            {stats.image_resized && (
+              <li className="info-note">
+                Image was resized from {stats.original_size?.[0]}x{stats.original_size?.[1]} 
+                to {stats.processed_size?.[0]}x{stats.processed_size?.[1]} for processing
+              </li>
+            )}
           </ul>
         </div>
       )}
 
-      <button className="download-button" onClick={handleDownload}>
-        Download Image
-      </button>
+      <ExportOptions image={image} />
     </div>
   );
 }
