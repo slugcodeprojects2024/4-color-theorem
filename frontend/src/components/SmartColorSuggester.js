@@ -208,10 +208,10 @@ function SmartColorSuggester({
   return (
     <div className="smart-color-suggester">
       <div className="smart-header">
-        <h4>🎨 Smart Color Suggestions</h4>
+        <h4>Smart Color Suggestions</h4>
         <div className="header-badges">
-          {serverAnalysis && <span className="badge server">Pattern ✓</span>}
-          {aiAnalysis && <span className="badge ai">AI ✓</span>}
+          {serverAnalysis && <span className="badge server">Pattern</span>}
+          {aiAnalysis && <span className="badge ai">AI</span>}
         </div>
       </div>
 
@@ -227,7 +227,7 @@ function SmartColorSuggester({
         <div className="ai-enhance-section">
           {!aiEnabled ? (
             <button className="ai-enhance-btn" onClick={analyzeWithAI}>
-              <span className="ai-icon">🤖</span>
+              <span className="ai-icon">AI</span>
               <span className="ai-text">
                 <strong>Enhance with AI</strong>
                 <small>Better detection using browser AI (~150MB download, cached)</small>
@@ -245,7 +245,7 @@ function SmartColorSuggester({
       )}
 
       {/* Error display */}
-      {error && <div className="error-message">⚠️ {error}</div>}
+      {error && <div className="error-message">Error: {error}</div>}
 
       {/* Detection results */}
       {detectedInfo && (
@@ -280,7 +280,7 @@ function SmartColorSuggester({
             className="details-toggle"
             onClick={() => setShowDetails(!showDetails)}
           >
-            {showDetails ? '▼' : '▶'} AI Classifications
+            {showDetails ? 'Hide' : 'Show'} AI Classifications
           </button>
           {showDetails && (
             <div className="classifications-list">
@@ -317,7 +317,7 @@ function SmartColorSuggester({
                 {/* Badges */}
                 {palette.is_smart && (
                   <div className={`smart-badge ${palette.source_layer}`}>
-                    {palette.source_layer === 'ai' ? '🤖 AI' : '⚡'}
+                    {palette.source_layer === 'ai' ? 'AI' : 'Fast'}
                   </div>
                 )}
                 {index === 0 && <div className="best-badge">Best</div>}

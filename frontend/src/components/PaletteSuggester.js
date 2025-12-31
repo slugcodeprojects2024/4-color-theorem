@@ -50,7 +50,7 @@ function PaletteSuggester({ imageFile, onSelectPalette, selectedPaletteId, apiBa
       </div>
 
       {isLoading && <div className="suggester-loading"><div className="loading-spinner"></div>Analyzing...</div>}
-      {error && <div className="suggester-error">⚠️ {error}</div>}
+      {error && <div className="suggester-error">Error: {error}</div>}
 
       {suggestions.length > 0 && (
         <div className="suggestions-grid">
@@ -81,7 +81,7 @@ function PaletteSuggester({ imageFile, onSelectPalette, selectedPaletteId, apiBa
 
       {!hasAnalyzed && !isLoading && (
         <button className="analyze-btn" onClick={fetchSuggestions}>
-          ✨ Analyze Image for Palette Suggestions
+          Analyze Image for Palette Suggestions
         </button>
       )}
     </div>

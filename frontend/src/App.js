@@ -321,7 +321,7 @@ function App() {
             margin: '20px 0',
             color: '#856404'
           }}>
-            <strong>⚠️ Server Not Connected</strong>
+            <strong>Server Not Connected</strong>
             <p style={{ margin: '8px 0 0 0', fontSize: '0.9rem' }}>
               Backend server is not running. Please start it with: <code style={{background: '#f0f0f0', padding: '2px 6px', borderRadius: '3px'}}>python app.py</code> in the backend folder.
             </p>
