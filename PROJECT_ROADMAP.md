@@ -209,7 +209,33 @@ This roadmap outlines all planned features, organized by priority, effort, and i
   - [ ] Better handling of gradient-heavy images
   - [ ] Performance improvements for large images
 
-### 4.2 Smart Image Preprocessing
+### 4.2 AI-Powered Smart Color Suggestions
+- **Status:** Pending
+- **Effort:** 1 week
+- **Description:** AI image recognition for intelligent color palette suggestions
+- **Tasks:**
+  - [ ] Enhanced image content analysis (scene detection, object recognition)
+  - [ ] Context-aware color suggestions based on image content
+  - [ ] Semantic understanding (e.g., sky = blue, grass = green, sun = yellow)
+  - [ ] Integration with existing palette suggester
+  - [ ] Real-time color suggestions as user uploads image
+  - [ ] Confidence scoring for suggestions
+  - [ ] Learning from user preferences
+  - [ ] Support for themed images (nature, urban, abstract, etc.)
+
+### 4.3 Optional 5-Color Mode
+- **Status:** Pending
+- **Effort:** 2-3 hours
+- **Description:** Allow users to use 5 colors instead of 4 for more complex images
+- **Tasks:**
+  - [ ] Add 5-color mode toggle in UI
+  - [ ] Update graph coloring solver to support 5 colors
+  - [ ] Modify algorithm to handle 5-color constraint
+  - [ ] Add option to auto-detect when 5 colors would be beneficial
+  - [ ] Update statistics to show color count used
+  - [ ] Preserve backward compatibility with 4-color mode
+
+### 4.4 Smart Image Preprocessing
 - **Status:** Pending
 - **Effort:** 3-4 hours
 - **Description:** AI-assisted image enhancement
@@ -220,7 +246,7 @@ This roadmap outlines all planned features, organized by priority, effort, and i
   - [ ] Image quality assessment
   - [ ] Auto-optimize for coloring book conversion
 
-### 4.3 Educational Mode
+### 4.5 Educational Mode
 - **Status:** Pending
 - **Effort:** 1 week
 - **Description:** Learn about graph theory and 4-color theorem
@@ -233,7 +259,7 @@ This roadmap outlines all planned features, organized by priority, effort, and i
   - [ ] Example problems and solutions
   - [ ] Educational content section/page
 
-### 4.4 Animation/Visualization
+### 4.6 Animation/Visualization
 - **Status:** Pending
 - **Effort:** 1 week
 - **Description:** Animate the coloring process
@@ -245,7 +271,7 @@ This roadmap outlines all planned features, organized by priority, effort, and i
   - [ ] Speed controls for animation
   - [ ] Frame-by-frame export
 
-### 4.5 Comparison Tools
+### 4.7 Comparison Tools
 - **Status:** Pending
 - **Effort:** 3-4 hours
 - **Description:** Compare different styles/algorithms
@@ -258,286 +284,3 @@ This roadmap outlines all planned features, organized by priority, effort, and i
 
 ---
 
-## Future Enhancements
-
-The following phases are potential future enhancements that may be considered after Phase 4 is complete. These are not currently planned for implementation.
-
-### Phase 5: Advanced Features (2-3 weeks)
-
-**Goal:** Professional tools and advanced capabilities
-
-#### 5.1 Real-Time Preview System
-- **Status:** Future Enhancement
-- **Effort:** 4-6 hours
-- **Description:** Live preview of changes
-- **Tasks:**
-  - [ ] WebSocket connection for live updates
-  - [ ] Preview line art conversion in real-time
-  - [ ] Show region detection progress
-  - [ ] Live color palette preview
-  - [ ] Before/after slider comparison
-  - [ ] Thumbnail preview while adjusting settings
-
-#### 5.2 Advanced Export Formats
-- **Status:** Future Enhancement
-- **Effort:** 1 week
-- **Description:** Professional export options
-- **Tasks:**
-  - [ ] SVG export (vector format with regions as paths)
-  - [ ] Layered PSD export (regions as separate layers)
-  - [ ] JSON export (region data, colors, graph structure)
-  - [ ] Print-ready PDF with multiple pages
-  - [ ] Export settings panel
-
-#### 5.3 Region Refinement Tools
-- **Status:** Future Enhancement
-- **Effort:** 1 week
-- **Description:** Manual editing capabilities
-- **Tasks:**
-  - [ ] Manual region merging/splitting
-  - [ ] Edge editing tools
-  - [ ] Region selection and manual coloring
-  - [ ] Undo/redo system
-  - [ ] Interactive region visualization
-  - [ ] Region properties panel
-
-#### 5.4 Save/Load Presets
-- **Status:** Future Enhancement
-- **Effort:** 2 hours
-- **Description:** Save favorite settings combinations
-- **Tasks:**
-  - [ ] Save preset (style + line art + stained glass settings)
-  - [ ] Name and manage presets
-  - [ ] Quick apply saved presets
-  - [ ] Preset gallery UI
-  - [ ] Export/import presets (JSON)
-  - [ ] Default presets included
-
-### Phase 7: Collaboration & Sharing (2-3 weeks)
-
-**Goal:** Social features and collaboration
-
-#### 7.1 User Accounts & Gallery
-- **Status:** Future Enhancement
-- **Effort:** 1-2 weeks
-- **Description:** Save and manage colored images
-- **Tasks:**
-  - [ ] User authentication (JWT)
-  - [ ] User profile and settings
-  - [ ] Gallery of past work
-  - [ ] Save colored images to account
-  - [ ] Organize by tags/categories
-  - [ ] Search and filter gallery
-
-#### 7.2 Sharing & Social Features
-- **Status:** Future Enhancement
-- **Effort:** 1 week
-- **Description:** Share creations with others
-- **Tasks:**
-  - [ ] Share publicly or privately
-  - [ ] Generate shareable links
-  - [ ] Social media integration
-  - [ ] Embed codes for websites
-  - [ ] Public gallery/browse others' work
-  - [ ] Like/favorite system
-
-#### 7.3 Collaborative Mode
-- **Status:** Future Enhancement
-- **Effort:** 1-2 weeks
-- **Description:** Multiple users color the same image
-- **Tasks:**
-  - [ ] Share sessions with unique URLs
-  - [ ] Real-time collaborative coloring
-  - [ ] Vote on best color combinations
-  - [ ] Chat/comment system
-  - [ ] Version history
-  - [ ] Conflict resolution
-
-### Phase 8: Mobile-Responsive Web UI (1 week)
-
-**Goal:** Optimize web interface for mobile browsers  
-**Note:** Focus is on responsive web design only - no native mobile or desktop apps planned
-
-#### 8.1 Mobile-Responsive UI
-- **Status:** Future Enhancement
-- **Effort:** 1 week
-- **Description:** Optimize web interface for mobile devices and tablets
-- **Tasks:**
-  - [ ] Responsive design improvements (flexible layouts)
-  - [ ] Touch-friendly controls (larger buttons, touch targets)
-  - [ ] Mobile-optimized image upload (camera access, file picker)
-  - [ ] Swipe gestures for image navigation
-  - [ ] Mobile menu/navigation (hamburger menu, collapsible sections)
-  - [ ] Performance optimization for mobile browsers
-  - [ ] Viewport meta tags and mobile-specific CSS
-  - [ ] Test on various mobile devices and screen sizes
-
-### Phase 9: Infrastructure & DevOps (1-2 weeks)
-
-**Goal:** Production-ready infrastructure
-
-#### 9.1 Analytics & Monitoring
-- **Status:** Future Enhancement
-- **Effort:** 1 week
-- **Description:** Track usage and performance
-- **Tasks:**
-  - [ ] User analytics (Google Analytics or similar)
-  - [ ] Processing time metrics
-  - [ ] Error tracking (Sentry)
-  - [ ] Performance monitoring
-  - [ ] Popular styles tracking
-  - [ ] User engagement analytics
-  - [ ] Dashboard for metrics
-
-#### 9.2 Caching & CDN
-- **Status:** Future Enhancement
-- **Effort:** 3-4 hours
-- **Description:** Improve performance and reduce server load
-- **Tasks:**
-  - [ ] Redis caching for processed images
-  - [ ] CDN for static assets
-  - [ ] Image CDN for results
-  - [ ] Cache invalidation strategy
-  - [ ] Cache warming for common images
-
-#### 9.3 API Documentation
-- **Status:** Future Enhancement
-- **Effort:** 2-3 hours
-- **Description:** Document API for developers
-- **Tasks:**
-  - [ ] OpenAPI/Swagger documentation
-  - [ ] API endpoint documentation
-  - [ ] Example requests/responses
-  - [ ] Authentication documentation
-  - [ ] Rate limiting documentation
-  - [ ] Interactive API explorer
-
-#### 9.4 Testing & Quality Assurance
-- **Status:** Future Enhancement
-- **Effort:** 1 week
-- **Description:** Comprehensive testing suite
-- **Tasks:**
-  - [ ] Unit tests for core algorithms
-  - [ ] Integration tests for API
-  - [ ] Frontend component tests
-  - [ ] End-to-end tests
-  - [ ] Performance tests
-  - [ ] Image processing accuracy tests
-  - [ ] CI/CD pipeline
-
-#### 9.5 Security Enhancements
-- **Status:** Future Enhancement
-- **Effort:** 1 week
-- **Description:** Security best practices
-- **Tasks:**
-  - [ ] Input validation and sanitization
-  - [ ] Rate limiting
-  - [ ] File upload security
-  - [ ] CORS configuration
-  - [ ] Authentication/authorization
-  - [ ] Security headers
-  - [ ] Vulnerability scanning
-
----
-
-## Feature Matrix
-
-| Feature | Priority | Effort | Impact | Phase | Status |
-|---------|----------|--------|--------|-------|--------|
-| More Color Palettes | Medium | Quick | Medium | 1 | Completed |
-| Image Size Optimization | Critical | Quick | High | 1 | Completed |
-| Enhanced Error Handling | High | Quick | Medium | 1 | Completed |
-| Export Options - Basic | High | Medium | High | 1 | Completed |
-| Processing Presets | Medium | Quick | Medium | 2 | Completed |
-| Image History | Medium | Quick | Medium | 2 | Completed |
-| Quick Preview | High | Quick | Medium | 2 | Completed |
-| API Hardening | High | Quick | Medium | 2 | Completed |
-| Performance Optimizations | Critical | Medium | High | 3 | Completed |
-| Advanced Adjacency Detection | Critical | Medium | High | 3 | Completed |
-| ML-Enhanced Region Detection | Critical | Large | High | 4 | In Progress |
-| Smart Image Preprocessing | Medium | Quick | Medium | 4 | Pending |
-| Educational Mode | Medium | Medium | Medium | 4 | Pending |
-| Animation/Visualization | Medium | Large | Low | 4 | Pending |
-| Comparison Tools | Medium | Quick | Medium | 4 | Pending |
-| Real-Time Preview | High | Medium | Medium | Future | Future |
-| Advanced Export Formats | High | Medium | High | Future | Future |
-| Region Refinement Tools | Medium | Medium | Low | Future | Future |
-| User Accounts & Gallery | High | Large | Medium | Future | Future |
-| Mobile-Responsive UI | High | Medium | Medium | Future | Future |
-| Analytics & Monitoring | High | Medium | Medium | Future | Future |
-
----
-
-## Success Metrics
-
-### Performance Goals
-- [ ] Process images up to 4000x4000px without timeout
-- [ ] Average processing time < 10 seconds for typical images
-- [ ] Support concurrent processing of 10+ images
-- [ ] 99.9% uptime
-
-### Quality Goals
-- [ ] 95%+ accuracy in region detection for line art
-- [ ] 90%+ accuracy in region detection for photos
-- [ ] Zero color conflicts in final output
-- [ ] User satisfaction score > 4.5/5
-
-### User Experience Goals
-- [ ] Mobile-responsive web interface (works well on phones/tablets)
-- [ ] < 3 second page load time
-- [ ] Intuitive UI (no tutorial needed)
-- [ ] Support for 10+ languages
-
----
-
-## Notes
-
-### Technical Debt
-- [ ] Refactor region detection for better modularity
-- [ ] Improve error handling throughout codebase
-- [ ] Add comprehensive logging
-- [ ] Optimize database queries (if database added)
-- [ ] Code documentation and comments
-
-### Future Considerations
-- [ ] Multi-language support (i18n)
-- [ ] Accessibility improvements (WCAG compliance)
-- [ ] Dark mode theme
-- [ ] Plugin system for custom effects
-- [ ] API for third-party integrations
-- [ ] WebAssembly for client-side processing
-
-### Platform Strategy
-- **Web-only approach:** Focus on responsive web design for all devices
-- **No native apps:** No plans for React Native mobile app or Electron desktop app
-- **Mobile optimization:** Ensure web interface works well on mobile browsers
-
----
-
-## Update Log
-
-- **January 2025:** Initial roadmap created
-- **January 2025:** Phase 1 features identified and planned
-- **January 2025:** Completed: Photo-to-line-art converter, Stained glass effect
-- **January 2025:** Phase 1 completed - Added color palettes, image optimization, error handling, and export options
-- **January 2025:** Phase 2 completed - Added presets, image history, quick preview, and API hardening
-- **January 2025:** Roadmap restructured - Phase 4 expanded to include educational content (Phase 6), Phases 5, 7, 8, 9 moved to Future Enhancements
-- **January 2025:** Phase 3 completed - Performance optimizations and adjacency detection working reliably
-- **January 2025:** Phase 4.1 ML-Enhanced Region Detection partially complete - SLIC segmentation implemented with UI controls
-
----
-
-## Next Steps
-
-1. Complete Phase 4: AI/ML Enhancements & Educational Content
-   - Finish ML segmentation optimizations
-   - Implement Smart Image Preprocessing
-   - Build Educational Mode
-   - Add Animation/Visualization features
-   - Create Comparison Tools
-3. Test and refine all Phase 4 features
-4. Consider future enhancements based on user feedback and needs
-
----
-
-This roadmap is a living document. Features may be reprioritized based on user feedback, technical constraints, or new opportunities.
