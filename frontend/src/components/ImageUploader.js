@@ -12,8 +12,8 @@ function ImageUploader({ onImageSelect }) {
         return;
       }
       
-      // Validate file size (10MB max)
-      const maxSizeMB = 10;
+      // Validate file size (50MB max)
+      const maxSizeMB = 50;
       const maxSizeBytes = maxSizeMB * 1024 * 1024;
       if (file.size > maxSizeBytes) {
         alert(`Image file too large (${(file.size / 1024 / 1024).toFixed(1)}MB). Maximum size is ${maxSizeMB}MB.`);
@@ -23,9 +23,9 @@ function ImageUploader({ onImageSelect }) {
       // Validate image dimensions by loading it
       const img = new Image();
       img.onload = () => {
-        const maxDimension = 4000;
+        const maxDimension = 10000;
         if (img.width > maxDimension || img.height > maxDimension) {
-          alert(`Image dimensions too large (${img.width}x${img.height}). Maximum is ${maxDimension}x${maxDimension}px. The image will be automatically resized.`);
+          alert(`Image dimensions too large (${img.width}x${img.height}). Maximum is ${maxDimension}x${maxDimension}px. The image will be automatically resized for processing.`);
         }
         onImageSelect(file);
       };
@@ -46,7 +46,7 @@ function ImageUploader({ onImageSelect }) {
       }
       
       // Validate file size
-      const maxSizeMB = 10;
+      const maxSizeMB = 50;
       const maxSizeBytes = maxSizeMB * 1024 * 1024;
       if (file.size > maxSizeBytes) {
         alert(`Image file too large (${(file.size / 1024 / 1024).toFixed(1)}MB). Maximum size is ${maxSizeMB}MB.`);
@@ -56,9 +56,9 @@ function ImageUploader({ onImageSelect }) {
       // Validate dimensions
       const img = new Image();
       img.onload = () => {
-        const maxDimension = 4000;
+        const maxDimension = 10000;
         if (img.width > maxDimension || img.height > maxDimension) {
-          alert(`Image dimensions too large (${img.width}x${img.height}). Maximum is ${maxDimension}x${maxDimension}px. The image will be automatically resized.`);
+          alert(`Image dimensions too large (${img.width}x${img.height}). Maximum is ${maxDimension}x${maxDimension}px. The image will be automatically resized for processing.`);
         }
         onImageSelect(file);
       };

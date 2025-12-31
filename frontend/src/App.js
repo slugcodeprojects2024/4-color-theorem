@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import ImageUploader from './components/ImageUploader';
 import ProcessButton from './components/ProcessButton';
 import ProgressIndicator from './components/ProgressIndicator';
@@ -6,8 +6,11 @@ import ResultViewer from './components/ResultViewer';
 import StyleSelector from './components/StyleSelector';
 import StainedGlassToggle from './components/StainedGlassToggle';
 import LineArtConverter from './components/LineArtConverter';
-import { processImage } from './services/api';
+import ImageHistory from './components/ImageHistory';
+import SegmentationSettings from './components/SegmentationSettings';
+import { processImage, checkServerStatus } from './services/api';
 import { applyStainedGlassEffect } from './effects/stainedGlassEffect';
+import { saveImageToHistory } from './components/ImageHistory';
 
 function App() {
   const [selectedImage, setSelectedImage] = useState(null);
@@ -23,6 +26,17 @@ function App() {
   });
   const [stats, setStats] = useState(null);
   const [error, setError] = useState(null);
+  const [serverStatus, setServerStatus] = useState(null);
+  const [useMLSegmentation, setUseMLSegmentation] = useState(false);
+  const [segmentationMethod, setSegmentationMethod] = useState('auto');
+  const [targetRegions, setTargetRegions] = useState(50);
+
+  // Check server status on mount
+  useEffect(() => {
+    checkServerStatus()
+      .then(() => setServerStatus('connected'))
+      .catch(() => setServerStatus('disconnected'));
+  }, []);
 
   const handleImageSelect = (imageFile) => {
     setSelectedImage(imageFile);
@@ -37,6 +51,16 @@ function App() {
       return;
     }
 
+    // Check server status before processing
+    try {
+      await checkServerStatus();
+      setServerStatus('connected');
+    } catch (err) {
+      setServerStatus('disconnected');
+      setError('Server is not available. Please ensure the backend is running on port 8000.');
+      return;
+    }
+
     setIsProcessing(true);
     setError(null);
 
@@ -47,13 +71,33 @@ function App() {
         ...lineArtSettings
       } : null;
       
+      // Prepare ML segmentation settings
+      const mlConfig = useMLSegmentation ? {
+        enabled: true,
+        method: segmentationMethod,
+        targetRegions: targetRegions
+      } : null;
+      
       // Process image with all settings
       const result = await processImage(
         selectedImage, 
         selectedStyle, 
         false, // Stained glass handled on frontend
-        lineArtConfig
+        lineArtConfig,
+        mlConfig
       );
+      
+      console.log('Processing result received:', {
+        success: result.success,
+        hasImage: !!result.image,
+        imageLength: result.image?.length,
+        hasStats: !!result.stats,
+        stats: result.stats
+      });
+      
+      if (!result || !result.image) {
+        throw new Error('Server returned invalid response - no image data received');
+      }
       
       let finalImage = result.image;
       
@@ -83,18 +127,26 @@ function App() {
       
       setProcessedImage(finalImage);
       setStats(result.stats);
+      
+      // Save to history (with error handling)
+      try {
+        saveImageToHistory(finalImage, getCurrentSettings(), result.stats);
+      } catch (err) {
+        console.warn('Failed to save to history:', err);
+        // Don't show error to user - history is optional
+      }
     } catch (err) {
       let errorMessage = err.message || 'Failed to process image';
       
       // Provide helpful error messages
       if (errorMessage.includes('too large') || errorMessage.includes('size')) {
-        errorMessage = 'Image is too large. Please use an image smaller than 10MB or 4000x4000px.';
+        errorMessage = 'Image is too large. Please use an image smaller than 50MB or 10000x10000px.';
       } else if (errorMessage.includes('format') || errorMessage.includes('Invalid')) {
         errorMessage = 'Invalid image format. Please use PNG, JPG, or JPEG.';
       } else if (errorMessage.includes('timeout') || errorMessage.includes('long')) {
         errorMessage = 'Processing took too long. Try a smaller image or disable some effects.';
-      } else if (errorMessage.includes('Network')) {
-        errorMessage = 'Network error. Please check your connection and ensure the server is running.';
+      } else if (errorMessage.includes('Network') || errorMessage.includes('Cannot connect')) {
+        errorMessage = 'Cannot connect to server. Please ensure the backend is running:\n\n1. Open terminal in the backend folder\n2. Run: python app.py\n3. Server should start on http://localhost:8000';
       }
       
       setError(errorMessage);
@@ -108,6 +160,7 @@ function App() {
     setSelectedStyle(style);
   };
 
+
   const handleStainedGlassToggle = (enabled) => {
     setStainedGlassEnabled(enabled);
   };
@@ -120,6 +173,32 @@ function App() {
     setLineArtSettings(newSettings);
   };
 
+  const getCurrentSettings = () => ({
+    style: selectedStyle,
+    stainedGlass: stainedGlassEnabled,
+    lineArt: lineArtEnabled ? lineArtSettings : { enabled: false },
+  });
+
+  const handleSelectHistoryItem = (item) => {
+    setProcessedImage(item.image);
+    setStats(item.stats);
+    if (item.settings) {
+      setSelectedStyle(item.settings.style || 'vibrant');
+      setStainedGlassEnabled(item.settings.stainedGlass || false);
+      if (item.settings.lineArt?.enabled) {
+        setLineArtEnabled(true);
+        setLineArtSettings({
+          lineThickness: item.settings.lineArt.lineThickness || 'medium',
+          detailLevel: item.settings.lineArt.detailLevel || 'detailed',
+          contrast: item.settings.lineArt.contrast || 1.0,
+        });
+      } else {
+        setLineArtEnabled(false);
+      }
+    }
+  };
+
+
   return (
     <div className="App">
       <header className="App-header">
@@ -128,6 +207,22 @@ function App() {
       </header>
 
       <main className="App-main">
+        {serverStatus === 'disconnected' && (
+          <div className="server-warning" style={{
+            background: '#fff3cd',
+            border: '1px solid #ffc107',
+            borderRadius: '8px',
+            padding: '12px',
+            margin: '20px 0',
+            color: '#856404'
+          }}>
+            <strong>⚠️ Server Not Connected</strong>
+            <p style={{ margin: '8px 0 0 0', fontSize: '0.9rem' }}>
+              Backend server is not running. Please start it with: <code style={{background: '#f0f0f0', padding: '2px 6px', borderRadius: '3px'}}>python app.py</code> in the backend folder.
+            </p>
+          </div>
+        )}
+
         <div className="upload-section">
           <ImageUploader onImageSelect={handleImageSelect} />
           {selectedImage && (
@@ -148,6 +243,14 @@ function App() {
               selectedStyle={selectedStyle} 
               onStyleChange={handleStyleChange} 
             />
+            <SegmentationSettings
+              useMLSegmentation={useMLSegmentation}
+              onToggleML={setUseMLSegmentation}
+              segmentationMethod={segmentationMethod}
+              onMethodChange={setSegmentationMethod}
+              targetRegions={targetRegions}
+              onTargetRegionsChange={setTargetRegions}
+            />
             <LineArtConverter
               enabled={lineArtEnabled}
               onToggle={handleLineArtToggle}
@@ -164,6 +267,8 @@ function App() {
             />
           </div>
         )}
+
+        <ImageHistory onSelectHistoryItem={handleSelectHistoryItem} />
 
         {isProcessing && <ProgressIndicator />}
 

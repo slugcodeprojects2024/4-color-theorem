@@ -7,14 +7,19 @@ import logging
 logger = logging.getLogger(__name__)
 
 class RegionDetector:
-    def __init__(self, min_region_area: int = 100):
+    def __init__(self, min_region_area: int = 100, is_line_art: bool = False):
         """
         Initialize region detector.
         
         Args:
             min_region_area: Minimum area in pixels for a valid region
+            is_line_art: Whether processing line art (needs larger min area)
         """
-        self.min_region_area = min_region_area
+        # For line art, use larger minimum area to reduce complexity
+        if is_line_art:
+            self.min_region_area = max(min_region_area, 200)  # At least 200px for line art
+        else:
+            self.min_region_area = min_region_area
         
     def detect_regions(self, image: np.ndarray) -> Tuple[np.ndarray, List[np.ndarray], Dict]:
         """
@@ -129,6 +134,7 @@ class RegionDetector:
     def find_adjacent_regions(self, labeled_regions: np.ndarray) -> Dict[int, Set[int]]:
         """
         Find which regions are adjacent to each other, accounting for thin separating lines.
+        Optimized for large numbers of regions.
         
         Args:
             labeled_regions: Image with labeled regions
@@ -139,21 +145,35 @@ class RegionDetector:
         adjacency = {}
         h, w = labeled_regions.shape
         
-        # Debug: Show unique regions
+        # Get unique regions
         unique_regions = np.unique(labeled_regions)
-        print(f"Debug - Unique regions in image: {unique_regions}")
+        unique_regions = unique_regions[unique_regions > 0]  # Skip background
+        num_regions = len(unique_regions)
+        
+        logger.info(f"Finding adjacencies for {num_regions} regions")
         
         # Initialize adjacency dict
         for region in unique_regions:
-            if region > 0:  # Skip background
-                adjacency[region] = set()
+            adjacency[int(region)] = set()
         
-        # Method 1: Check within a small radius to jump over thin lines
-        search_radius = 10  # Adjust based on line thickness
+        # For very large numbers of regions, use a more efficient method
+        if num_regions > 1000:
+            logger.info("Using optimized adjacency detection for large graph")
+            # Use 4-connected pixel check (faster for large graphs)
+            search_radius = 5  # Smaller radius for speed
+            sample_rate = max(1, int(num_regions / 500))  # Sample more sparsely for large graphs
+        else:
+            search_radius = 10
+            sample_rate = 5
+        
         edges_found = 0
         
         # For each region, find its boundary pixels
-        for region in unique_regions[1:]:  # Skip 0 (background)
+        for idx, region in enumerate(unique_regions):
+            if idx % 100 == 0:
+                logger.info(f"Processing region {idx}/{num_regions}")
+            
+            region = int(region)
             # Find boundary pixels of this region
             mask = (labeled_regions == region).astype(np.uint8)
             
@@ -162,14 +182,15 @@ class RegionDetector:
             if not contours:
                 continue
                 
-            # Sample points along the contour
+            # Sample points along the contour (more sparse for large graphs)
             contour = contours[0]
-            for point in contour[::5]:  # Sample every 5th point for efficiency
+            step = max(1, len(contour) // (100 * sample_rate))  # Limit samples per region
+            for point in contour[::step]:
                 x, y = point[0]
                 
                 # Look in a radius around this boundary point
-                for dy in range(-search_radius, search_radius + 1):
-                    for dx in range(-search_radius, search_radius + 1):
+                for dy in range(-search_radius, search_radius + 1, 2):  # Step by 2 for speed
+                    for dx in range(-search_radius, search_radius + 1, 2):
                         if dx == 0 and dy == 0:
                             continue
                             
@@ -177,11 +198,11 @@ class RegionDetector:
                         if 0 <= ny < h and 0 <= nx < w:
                             neighbor = int(labeled_regions[ny, nx])
                             if neighbor > 0 and neighbor != region:
-                                adjacency[region].add(neighbor)
-                                edges_found += 1
+                                if neighbor not in adjacency[region]:
+                                    adjacency[region].add(neighbor)
+                                    edges_found += 1
         
-        # Debug output
-        print(f"Debug - Edges found: {edges_found}")
-        print(f"Debug - Adjacency dict: {dict((k, list(v)) for k, v in adjacency.items())}")
+        total_edges = sum(len(neighbors) for neighbors in adjacency.values()) // 2
+        logger.info(f"Found {total_edges} unique edges from {edges_found} edge checks")
         
         return adjacency

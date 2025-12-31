@@ -179,10 +179,11 @@ class PhotoToLineArt:
     def _cleanup_noise(self, image: np.ndarray, detail_level: str) -> np.ndarray:
         """Remove small noise artifacts."""
         # Remove very small connected components
+        # Increased thresholds to reduce number of tiny regions
         if detail_level == 'simple':
-            min_area = 50  # Remove smaller components for simple mode
+            min_area = 100  # Remove smaller components for simple mode
         else:
-            min_area = 20  # Keep more detail
+            min_area = 50  # Increased from 20 to reduce complexity
         
         # Find contours
         contours, _ = cv2.findContours(image, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -196,6 +197,10 @@ class PhotoToLineArt:
         
         # Apply mask
         cleaned = cv2.bitwise_and(image, mask)
+        
+        # Additional morphological operations to close small gaps
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_CLOSE, kernel, iterations=1)
         
         return cleaned
 

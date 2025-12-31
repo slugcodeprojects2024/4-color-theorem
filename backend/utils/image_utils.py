@@ -11,8 +11,8 @@ import logging
 logger = logging.getLogger(__name__)
 
 # Maximum dimensions for processing (to prevent timeouts)
-MAX_PROCESSING_DIMENSION = 2000
-MAX_UPLOAD_DIMENSION = 4000
+MAX_PROCESSING_DIMENSION = 3000  # Increased for better quality on large images
+MAX_UPLOAD_DIMENSION = 10000
 
 
 def optimize_image_size(
@@ -70,7 +70,7 @@ def optimize_image_size(
     }
 
 
-def validate_image_file(file_contents: bytes, max_size_mb: float = 10.0) -> Tuple[bool, Optional[str]]:
+def validate_image_file(file_contents: bytes, max_size_mb: float = 50.0) -> Tuple[bool, Optional[str]]:
     """
     Validate image file before processing.
     

@@ -1,13 +1,45 @@
-import React from 'react';
+import React, { useState } from 'react';
 import ExportOptions from './ExportOptions';
 
 function ResultViewer({ image, stats }) {
+  const [imageError, setImageError] = useState(false);
+
+  if (!image) {
+    return (
+      <div className="result-viewer">
+        <h3>Colored Result</h3>
+        <p>No image data available</p>
+      </div>
+    );
+  }
 
   return (
     <div className="result-viewer">
       <h3>Colored Result</h3>
       <div className="result-image-container">
-        <img src={image} alt="Colored result" className="result-image" />
+        {imageError ? (
+          <div style={{ padding: '20px', textAlign: 'center', color: '#ff4444' }}>
+            <p>Failed to load image</p>
+            <p style={{ fontSize: '0.8rem', marginTop: '10px' }}>
+              Image data length: {image?.length || 0} characters
+            </p>
+          </div>
+        ) : (
+          <img 
+            src={image} 
+            alt="Colored result" 
+            className="result-image"
+            onError={(e) => {
+              console.error('Image load error:', e);
+              console.error('Image source:', image?.substring(0, 100));
+              setImageError(true);
+            }}
+            onLoad={() => {
+              console.log('Image loaded successfully');
+              setImageError(false);
+            }}
+          />
+        )}
       </div>
       
       {stats && (
