@@ -12,7 +12,9 @@ export const processImage = async (
   style = 'vibrant', 
   stainedGlassEnabled = false,
   lineArtSettings = null,
-  mlSettings = null
+  mlSettings = null,
+  useFiveColors = false,
+  customColors = null
 ) => {
   const formData = new FormData();
   formData.append('file', imageFile);
@@ -35,6 +37,14 @@ export const processImage = async (
     formData.append('target_regions', String(mlSettings.targetRegions || 50));
   } else {
     formData.append('use_ml', 'false');
+  }
+
+  // Add 5-color mode setting
+  formData.append('use_five_colors', useFiveColors ? 'true' : 'false');
+  
+  // Add custom colors if provided
+  if (customColors && Array.isArray(customColors) && customColors.length > 0) {
+    formData.append('custom_colors', JSON.stringify(customColors));
   }
 
   try {

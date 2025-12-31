@@ -6,19 +6,27 @@ import logging
 logger = logging.getLogger(__name__)
 
 class FourColorSolver:
-    def __init__(self):
-        """Initialize the 4-color solver."""
-        self.colors = [0, 1, 2, 3]  # Four colors
+    def __init__(self, max_colors: int = 4):
+        """
+        Initialize the color solver.
+        
+        Args:
+            max_colors: Maximum number of colors to use (4 or 5)
+        """
+        if max_colors not in [4, 5]:
+            raise ValueError("max_colors must be 4 or 5")
+        self.max_colors = max_colors
+        self.colors = list(range(max_colors))  # [0,1,2,3] or [0,1,2,3,4]
         
     def solve(self, graph: nx.Graph) -> Dict[int, int]:
         """
-        Solve the graph coloring problem using at most 4 colors.
+        Solve the graph coloring problem using at most max_colors.
         
         Args:
             graph: NetworkX graph to color
             
         Returns:
-            Dictionary mapping node_id to color_id (0-3)
+            Dictionary mapping node_id to color_id (0 to max_colors-1)
         """
         if graph.number_of_nodes() == 0:
             return {}
@@ -42,8 +50,9 @@ class FourColorSolver:
         coloring = self._welsh_powell(graph)
         max_color = max(coloring.values()) if coloring else -1
         
-        # Strategy 2: If Welsh-Powell uses more than 4 colors, try backtracking
-        if max_color > 3:
+        # Strategy 2: If Welsh-Powell uses more than max_colors, try backtracking
+        max_allowed = self.max_colors - 1
+        if max_color > max_allowed:
             logger.warning(f"Welsh-Powell used {max_color + 1} colors, trying backtracking")
             backtrack_result = self._backtrack_coloring(graph, max_iterations=10000)
             if backtrack_result:
@@ -58,9 +67,9 @@ class FourColorSolver:
             logger.warning("Using NetworkX greedy coloring")
             coloring = nx.greedy_color(graph, strategy='DSATUR')
         
-        # Normalize colors to 0-3 range
+        # Normalize colors to 0-(max_colors-1) range
         max_color = max(coloring.values()) if coloring else -1
-        if max_color > 3:
+        if max_color > max_allowed:
             coloring = self._normalize_colors(coloring)
         
         return coloring
@@ -104,7 +113,7 @@ class FourColorSolver:
     
     def _backtrack_coloring(self, graph: nx.Graph, max_iterations: int = 10000) -> Optional[Dict[int, int]]:
         """
-        Use backtracking to find a 4-coloring if possible.
+        Use backtracking to find a coloring with max_colors if possible.
         Limited by max_iterations to prevent hanging on complex graphs.
         
         Args:
@@ -161,17 +170,16 @@ class FourColorSolver:
     
     def _normalize_colors(self, coloring: Dict[int, int]) -> Dict[int, int]:
         """
-        Normalize coloring to use only colors 0-3.
-        Maps colors sequentially to 0-3 range. This is safe because if the original
+        Normalize coloring to use only colors 0 to (max_colors-1).
+        Maps colors sequentially to the allowed range. This is safe because if the original
         coloring was valid (no adjacent nodes had same color), the modulo mapping
-        preserves that property for the first 4 colors. If more than 4 colors were used,
-        this is a best-effort normalization (non-planar graphs may need more than 4 colors).
+        preserves that property for the first max_colors colors.
         
         Args:
             coloring: Dictionary mapping node_id to color_id
             
         Returns:
-            Dictionary with colors normalized to 0-3 range
+            Dictionary with colors normalized to 0-(max_colors-1) range
         """
         if not coloring:
             return coloring
@@ -184,19 +192,19 @@ class FourColorSolver:
                 unique_colors.append(color)
                 seen.add(color)
         
-        # Create mapping: map first 4 unique colors to 0-3, others wrap around
+        # Create mapping: map first max_colors unique colors to 0-(max_colors-1), others wrap around
         # This preserves the coloring property as much as possible
         color_map = {}
         for idx, old_color in enumerate(unique_colors):
-            color_map[old_color] = idx % 4
+            color_map[old_color] = idx % self.max_colors
         
         # Apply mapping
         normalized = {node: color_map[color] for node, color in coloring.items()}
         
         num_colors_used = len(set(normalized.values()))
-        if len(unique_colors) > 4:
+        if len(unique_colors) > self.max_colors:
             logger.warning(f"Graph used {len(unique_colors)} colors, normalized to {num_colors_used} colors")
         else:
-            logger.info(f"Normalized coloring: {num_colors_used} colors used")
+            logger.info(f"Normalized coloring: {num_colors_used} colors used (max: {self.max_colors})")
         
         return normalized

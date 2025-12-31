@@ -12,7 +12,7 @@ import io
 import base64
 import cv2
 import time
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import logging
 
 logger = logging.getLogger(__name__)
@@ -25,6 +25,7 @@ from core.photo_to_lineart import convert_photo_to_lineart
 from core.ml_segmentation import MLRegionDetector, create_detector
 from core.smart_preprocessing import SmartPreprocessor
 from core.palette_suggester import suggest_palettes, PREDEFINED_PALETTES
+from core.smart_color_ai import analyze_image_opencv
 from utils.image_utils import optimize_image_size, validate_image_file, upscale_image
 
 app = FastAPI(title="4-Color Theorem API")
@@ -45,7 +46,7 @@ app.add_middleware(
 
 # Initialize our processors (will be recreated per request with appropriate settings)
 graph_builder = GraphBuilder()
-color_solver = FourColorSolver()
+# Color solver will be created per request with appropriate max_colors
 
 
 # Mount static files
@@ -110,6 +111,48 @@ async def analyze_image(
         logger.error(f"Analysis error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/analyze-colors")
+@limiter.limit("120/minute")
+async def analyze_colors(
+    request: Request,
+    file: UploadFile = File(...)
+):
+    """
+    Analyze image using server-side OpenCV (Layer 1).
+    Returns pattern analysis and initial palette suggestions.
+    Browser AI (Layer 2) can enhance these results client-side.
+    """
+    try:
+        contents = await file.read()
+        if len(contents) > 50 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="Image too large (max 50MB)")
+        
+        nparr = np.frombuffer(contents, np.uint8)
+        image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        if image is None:
+            raise HTTPException(status_code=400, detail="Invalid image file")
+        
+        # Convert BGR to RGB
+        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        
+        # Run OpenCV analysis
+        result = analyze_image_opencv(image_rgb)
+        
+        return JSONResponse(content={
+            "success": True,
+            "analysis": result
+        })
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Analysis error: {e}", exc_info=True)
+        import traceback
+        error_detail = str(e)
+        if "analyze_image_opencv" in error_detail or "smart_color_ai" in error_detail:
+            error_detail = f"Color analysis failed: {str(e)}"
+        raise HTTPException(status_code=500, detail=error_detail)
+
 @app.post("/api/suggest-palettes")
 @limiter.limit("60/minute")
 async def suggest_palettes_endpoint(
@@ -140,7 +183,7 @@ async def suggest_palettes_endpoint(
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/preview")
-@limiter.limit("30/minute")
+@limiter.limit("120/minute")
 async def preview_image(
     request: Request,
     file: UploadFile = File(...),
@@ -204,7 +247,7 @@ async def preview_image(
         raise HTTPException(status_code=500, detail=error_detail)
 
 @app.post("/api/process")
-@limiter.limit("10/minute")
+@limiter.limit("60/minute")
 async def process_image(
     request: Request,
     file: UploadFile = File(...),
@@ -216,9 +259,11 @@ async def process_image(
     contrast: str = Form("1.0"),
     use_ml: str = Form("false"),
     segmentation_method: str = Form("auto"),
-    target_regions: str = Form("50")
+    target_regions: str = Form("50"),
+    use_five_colors: str = Form("false"),
+    custom_colors: str = Form(None)
 ):
-    """Process uploaded image through 4-color pipeline."""
+    """Process uploaded image through coloring pipeline (4 or 5 colors)."""
     try:
         # Read and validate image
         contents = await file.read()
@@ -247,6 +292,24 @@ async def process_image(
         # Process through pipeline
         use_ml_seg = use_ml.lower() in ("true", "1", "yes", "on")
         target_regions_int = int(target_regions) if target_regions.isdigit() else 50
+        use_five_colors_bool = use_five_colors.lower() in ("true", "1", "yes", "on")
+        
+        # Parse custom colors if provided
+        custom_colors_list = None
+        if custom_colors:
+            try:
+                import json
+                custom_colors_list = json.loads(custom_colors)
+                # Validate colors format: should be list of [R, G, B] lists
+                if isinstance(custom_colors_list, list) and len(custom_colors_list) > 0:
+                    for color in custom_colors_list:
+                        if not (isinstance(color, list) and len(color) == 3):
+                            custom_colors_list = None
+                            break
+                else:
+                    custom_colors_list = None
+            except:
+                custom_colors_list = None
         
         result = process_pipeline(
             image_np, 
@@ -259,7 +322,9 @@ async def process_image(
             size_metadata=size_metadata,
             use_ml_segmentation=use_ml_seg,
             segmentation_method=segmentation_method,
-            target_regions=target_regions_int
+            target_regions=target_regions_int,
+            use_five_colors=use_five_colors_bool,
+            custom_colors=custom_colors_list
         )
         
         return JSONResponse(content=result)
@@ -334,7 +399,9 @@ def process_pipeline(
     size_metadata: Optional[Dict] = None,
     use_ml_segmentation: bool = False,
     segmentation_method: str = 'auto',
-    target_regions: int = 50
+    target_regions: int = 50,
+    use_five_colors: bool = False,
+    custom_colors: Optional[List[List[int]]] = None
 ) -> Dict[str, Any]:
     """Main processing pipeline with optional ML segmentation."""
     
@@ -420,11 +487,13 @@ def process_pipeline(
     if graph.number_of_nodes() > 2000:
         logger.warning(f"Large graph detected: {graph.number_of_nodes()} nodes. Coloring may take time.")
     
-    # Step 3: Solve 4-coloring
+    # Step 3: Solve coloring (4 or 5 colors)
+    max_colors = 5 if use_five_colors else 4
+    color_solver = FourColorSolver(max_colors=max_colors)
     coloring = color_solver.solve(graph)
     
     # Step 4: Apply colors
-    colored_image = apply_colors(labeled_regions, coloring, style)
+    colored_image = apply_colors(labeled_regions, coloring, style, custom_colors=custom_colors)
     
     # Step 5: Apply stained glass effect if enabled
     if stained_glass_enabled:
@@ -449,9 +518,12 @@ def process_pipeline(
     else:
         num_regions_final = len(contours)
     
+    colors_used = len(set(coloring.values()))
     stats_dict = {
         "regions": num_regions_final,
-        "colors_used": len(set(coloring.values())),
+        "colors_used": colors_used,
+        "max_colors_allowed": max_colors,
+        "color_mode": "5-color" if use_five_colors else "4-color",
         "graph_nodes": graph.number_of_nodes(),
         "graph_edges": graph.number_of_edges()
     }
@@ -468,10 +540,17 @@ def process_pipeline(
         "stats": stats_dict
     }
 
-def apply_colors(labeled_regions: np.ndarray, coloring: Dict[int, int], style: str) -> np.ndarray:
-    """Apply colors to regions based on style."""
-    # Define color palettes
-    palettes = {
+def apply_colors(labeled_regions: np.ndarray, coloring: Dict[int, int], style: str, custom_colors: Optional[List[List[int]]] = None) -> np.ndarray:
+    """Apply colors to regions based on style or custom colors."""
+    # Use custom colors if provided
+    if custom_colors and len(custom_colors) > 0:
+        palette = custom_colors
+        # Ensure we have at least 4 colors (or 5 if needed)
+        while len(palette) < 4:
+            palette.append(palette[-1] if palette else [128, 128, 128])
+    else:
+        # Define color palettes
+        palettes = {
         "vibrant": [
             [220, 20, 60],    # Crimson
             [0, 191, 255],    # Deep Sky Blue
@@ -529,10 +608,11 @@ def apply_colors(labeled_regions: np.ndarray, coloring: Dict[int, int], style: s
     colored = np.ones((h, w, 3), dtype=np.uint8) * 255  # White background
     
     # Apply colors to each region
+    max_colors = len(palette)
     for region_id, color_id in coloring.items():
         if region_id > 0:  # Skip background (0)
             mask = labeled_regions == region_id
-            colored[mask] = palette[color_id % 4]
+            colored[mask] = palette[color_id % max_colors]
     
     return colored
 

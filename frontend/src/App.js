@@ -8,6 +8,8 @@ import StainedGlassToggle from './components/StainedGlassToggle';
 import LineArtConverter from './components/LineArtConverter';
 import ImageHistory from './components/ImageHistory';
 import SegmentationSettings from './components/SegmentationSettings';
+import FiveColorToggle from './components/FiveColorToggle';
+import SmartColorSuggester from './components/SmartColorSuggester';
 import { processImage, checkServerStatus } from './services/api';
 import { applyStainedGlassEffect } from './effects/stainedGlassEffect';
 import { saveImageToHistory } from './components/ImageHistory';
@@ -30,6 +32,9 @@ function App() {
   const [useMLSegmentation, setUseMLSegmentation] = useState(false);
   const [segmentationMethod, setSegmentationMethod] = useState('auto');
   const [targetRegions, setTargetRegions] = useState(50);
+  const [useFiveColors, setUseFiveColors] = useState(false);
+  const [selectedPalette, setSelectedPalette] = useState(null);
+  const [enableSmartColorSuggestions, setEnableSmartColorSuggestions] = useState(false);
 
   // Check server status on mount
   useEffect(() => {
@@ -43,6 +48,105 @@ function App() {
     setProcessedImage(null);
     setStats(null);
     setError(null);
+  };
+
+  const handleProcessWithColors = async (colors) => {
+    if (!selectedImage) {
+      setError('Please select an image first');
+      return;
+    }
+
+    // Check server status before processing
+    try {
+      await checkServerStatus();
+      setServerStatus('connected');
+    } catch (err) {
+      setServerStatus('disconnected');
+      setError('Server is not available. Please ensure the backend is running on port 8000.');
+      return;
+    }
+
+    setIsProcessing(true);
+    setError(null);
+
+    try {
+      // Prepare line art settings if enabled
+      const lineArtConfig = lineArtEnabled ? {
+        enabled: true,
+        ...lineArtSettings
+      } : null;
+      
+      // Prepare ML segmentation settings
+      const mlConfig = useMLSegmentation ? {
+        enabled: true,
+        method: segmentationMethod,
+        targetRegions: targetRegions
+      } : null;
+      
+      // Process image with custom colors
+      const result = await processImage(
+        selectedImage, 
+        selectedStyle, 
+        false, // Stained glass handled on frontend
+        lineArtConfig,
+        mlConfig,
+        useFiveColors,
+        colors // Pass custom colors
+      );
+      
+      console.log('Processing result received:', {
+        success: result.success,
+        hasImage: !!result.image,
+        imageLength: result.image?.length,
+        hasStats: !!result.stats,
+        stats: result.stats
+      });
+      
+      if (!result || !result.image) {
+        throw new Error('Server returned invalid response - no image data received');
+      }
+      
+      let finalImage = result.image;
+      
+      // Apply WebGL stained glass effect on frontend if enabled
+      if (stainedGlassEnabled) {
+        try {
+          console.log('Applying stained glass effect (intensity: 1.0)...');
+          finalImage = await applyStainedGlassEffect(result.image, 1.0);
+          console.log('Stained glass effect applied successfully');
+        } catch (stainedGlassError) {
+          console.warn('Stained glass effect failed, using original:', stainedGlassError);
+          finalImage = result.image;
+        }
+      }
+      
+      setProcessedImage(finalImage);
+      setStats(result.stats);
+      
+      // Save to history
+      try {
+        saveImageToHistory(finalImage, getCurrentSettings(), result.stats);
+      } catch (err) {
+        console.warn('Failed to save to history:', err);
+      }
+    } catch (err) {
+      let errorMessage = err.message || 'Failed to process image';
+      
+      if (errorMessage.includes('too large') || errorMessage.includes('size')) {
+        errorMessage = 'Image is too large. Please use an image smaller than 50MB or 10000x10000px.';
+      } else if (errorMessage.includes('format') || errorMessage.includes('Invalid')) {
+        errorMessage = 'Invalid image format. Please use PNG, JPG, or JPEG.';
+      } else if (errorMessage.includes('timeout') || errorMessage.includes('long')) {
+        errorMessage = 'Processing took too long. Try a smaller image or disable some effects.';
+      } else if (errorMessage.includes('Network') || errorMessage.includes('Cannot connect')) {
+        errorMessage = 'Cannot connect to server. Please ensure the backend is running on port 8000.';
+      }
+      
+      setError(errorMessage);
+      console.error('Processing error:', err);
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   const handleProcess = async () => {
@@ -84,7 +188,8 @@ function App() {
         selectedStyle, 
         false, // Stained glass handled on frontend
         lineArtConfig,
-        mlConfig
+        mlConfig,
+        useFiveColors
       );
       
       console.log('Processing result received:', {
@@ -238,34 +343,68 @@ function App() {
         </div>
 
         {selectedImage && (
-          <div className="controls-section">
-            <StyleSelector 
-              selectedStyle={selectedStyle} 
-              onStyleChange={handleStyleChange} 
-            />
-            <SegmentationSettings
-              useMLSegmentation={useMLSegmentation}
-              onToggleML={setUseMLSegmentation}
-              segmentationMethod={segmentationMethod}
-              onMethodChange={setSegmentationMethod}
-              targetRegions={targetRegions}
-              onTargetRegionsChange={setTargetRegions}
-            />
-            <LineArtConverter
-              enabled={lineArtEnabled}
-              onToggle={handleLineArtToggle}
-              settings={lineArtSettings}
-              onSettingsChange={handleLineArtSettingsChange}
-            />
-            <StainedGlassToggle 
-              enabled={stainedGlassEnabled} 
-              onToggle={handleStainedGlassToggle} 
-            />
-            <ProcessButton 
-              onProcess={handleProcess} 
-              disabled={isProcessing} 
-            />
-          </div>
+          <>
+            {enableSmartColorSuggestions && (
+              <SmartColorSuggester
+                imageFile={selectedImage}
+                onSelectPalette={(palette) => {
+                  setSelectedPalette(palette);
+                  // Automatically process image with selected palette colors
+                  if (palette && palette.colors) {
+                    handleProcessWithColors(palette.colors);
+                  }
+                }}
+                selectedPaletteId={selectedPalette?.id}
+                useFiveColors={useFiveColors}
+              />
+            )}
+            <div className="controls-section">
+              <div className="setting-group" style={{ marginBottom: '16px', padding: '16px', background: 'white', border: '1px solid #e0e0e0', borderRadius: '8px' }}>
+                <label className="toggle-label" style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', fontWeight: '500', color: '#333' }}>
+                  <input
+                    type="checkbox"
+                    checked={enableSmartColorSuggestions}
+                    onChange={(e) => setEnableSmartColorSuggestions(e.target.checked)}
+                    style={{ width: '18px', height: '18px', cursor: 'pointer' }}
+                  />
+                  <span>Enable Smart Color Suggestions</span>
+                </label>
+                <p className="setting-description" style={{ fontSize: '0.85em', color: '#666', margin: '8px 0 0 28px', lineHeight: '1.4' }}>
+                  Get AI-powered color palette suggestions based on your image content
+                </p>
+              </div>
+              <StyleSelector 
+                selectedStyle={selectedStyle} 
+                onStyleChange={handleStyleChange} 
+              />
+              <SegmentationSettings
+                useMLSegmentation={useMLSegmentation}
+                onToggleML={setUseMLSegmentation}
+                segmentationMethod={segmentationMethod}
+                onMethodChange={setSegmentationMethod}
+                targetRegions={targetRegions}
+                onTargetRegionsChange={setTargetRegions}
+              />
+              <FiveColorToggle
+                enabled={useFiveColors}
+                onToggle={setUseFiveColors}
+              />
+              <LineArtConverter
+                enabled={lineArtEnabled}
+                onToggle={handleLineArtToggle}
+                settings={lineArtSettings}
+                onSettingsChange={handleLineArtSettingsChange}
+              />
+              <StainedGlassToggle 
+                enabled={stainedGlassEnabled} 
+                onToggle={handleStainedGlassToggle} 
+              />
+              <ProcessButton 
+                onProcess={handleProcess} 
+                disabled={isProcessing} 
+              />
+            </div>
+          </>
         )}
 
         <ImageHistory onSelectHistoryItem={handleSelectHistoryItem} />
@@ -287,7 +426,7 @@ function App() {
       </main>
 
       <footer className="App-footer">
-        <p>Upload a coloring book style image to automatically color it with at most 4 colors</p>
+        <p>Upload a coloring book style image to automatically color it with 4 or 5 colors</p>
       </footer>
     </div>
   );
