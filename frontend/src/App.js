@@ -10,6 +10,7 @@ import ImageHistory from './components/ImageHistory';
 import SegmentationSettings from './components/SegmentationSettings';
 import FiveColorToggle from './components/FiveColorToggle';
 import SmartColorSuggester from './components/SmartColorSuggester';
+import EducationalPage from './components/EducationalPage';
 import { processImage, checkServerStatus } from './services/api';
 import { applyStainedGlassEffect } from './effects/stainedGlassEffect';
 import { saveImageToHistory } from './components/ImageHistory';
@@ -35,6 +36,7 @@ function App() {
   const [useFiveColors, setUseFiveColors] = useState(false);
   const [selectedPalette, setSelectedPalette] = useState(null);
   const [enableSmartColorSuggestions, setEnableSmartColorSuggestions] = useState(false);
+  const [showEducationalPage, setShowEducationalPage] = useState(false);
 
   // Check server status on mount
   useEffect(() => {
@@ -304,11 +306,40 @@ function App() {
   };
 
 
+  // Show educational page if requested
+  if (showEducationalPage) {
+    return <EducationalPage onBack={() => setShowEducationalPage(false)} />;
+  }
+
   return (
     <div className="App">
       <header className="App-header">
         <h1>Four Color Theorem</h1>
         <p className="subtitle">Automatic Image Coloring using Graph Theory</p>
+        <button 
+          className="educational-link"
+          onClick={() => setShowEducationalPage(true)}
+          style={{
+            marginTop: '15px',
+            padding: '10px 20px',
+            background: 'rgba(255, 255, 255, 0.2)',
+            border: '2px solid white',
+            borderRadius: '6px',
+            color: 'white',
+            fontSize: '14px',
+            fontWeight: '500',
+            cursor: 'pointer',
+            transition: 'all 0.3s ease'
+          }}
+          onMouseEnter={(e) => {
+            e.target.style.background = 'rgba(255, 255, 255, 0.3)';
+          }}
+          onMouseLeave={(e) => {
+            e.target.style.background = 'rgba(255, 255, 255, 0.2)';
+          }}
+        >
+          Learn About the Four Color Theorem
+        </button>
       </header>
 
       <main className="App-main">
