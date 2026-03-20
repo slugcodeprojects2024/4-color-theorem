@@ -2,6 +2,7 @@ import React from 'react';
 import './EducationalPage.css';
 
 function EducationalPage({ onBack }) {
+
   return (
     <div className="educational-page">
       <div className="educational-container">
