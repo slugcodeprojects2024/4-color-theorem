@@ -26,6 +26,7 @@ from core.ml_segmentation import MLRegionDetector, create_detector
 from core.smart_preprocessing import SmartPreprocessor
 from core.palette_suggester import suggest_palettes, PREDEFINED_PALETTES
 from core.smart_color_ai import analyze_image_opencv
+from core.photo_processor import process_photo  # NEW: unified photo pipeline
 from utils.image_utils import optimize_image_size, validate_image_file, upscale_image
 
 app = FastAPI(title="4-Color Theorem API")
@@ -54,7 +55,7 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 @app.get("/")
 async def root():
-    return {"message": "4-Color Theorem API", "version": "0.3.0"}
+    return {"message": "4-Color Theorem API", "version": "0.4.0"}
 
 @app.get("/api/palettes")
 async def get_palettes():
@@ -405,23 +406,80 @@ def process_pipeline(
 ) -> Dict[str, Any]:
     """Main processing pipeline with optional ML segmentation."""
     
-    # Step 0: Convert photo to line art if requested
+    max_colors = 5 if use_five_colors else 4
+    
+    # =====================================================================
+    # PHOTO PATH: use unified pipeline (K-means → regions → colour)
+    # This produces dramatically better results than line-art conversion
+    # because region boundaries follow actual colour transitions in the
+    # photo rather than being re-detected from a lossy intermediate.
+    # =====================================================================
     if convert_lineart:
-        logger.info(f"Converting photo to line art (thickness: {line_thickness}, detail: {detail_level}, contrast: {contrast})")
-        image_np = convert_photo_to_lineart(
+        logger.info("Using unified photo processing pipeline")
+        
+        # Build palette
+        palette = _get_palette(style, custom_colors, max_colors)
+        
+        colored_image, photo_stats = process_photo(
             image_np,
-            line_thickness=line_thickness,
-            detail_level=detail_level,
-            contrast=contrast
+            palette=palette,
+            n_clusters=8,
+            min_region_area=200,
+            max_colors=max_colors,
         )
+        
+        # Apply stained glass effect if enabled
+        if stained_glass_enabled:
+            try:
+                from effects.stained_glass import apply_stained_glass
+                logger.info("Applying stained glass effect...")
+                colored_image = apply_stained_glass(colored_image, intensity=0.8)
+            except Exception as e:
+                logger.warning(f"Stained glass failed: {e}")
+        
+        # Upscale result if image was resized for processing
+        if size_metadata and size_metadata.get('resized', False):
+            scale_factor = 1.0 / size_metadata['scale_factor']
+            colored_image = upscale_image(colored_image, scale_factor, method='lanczos')
+        
+        # Convert result to base64
+        result_pil = Image.fromarray(colored_image)
+        buffered = io.BytesIO()
+        result_pil.save(buffered, format="PNG")
+        img_base64 = base64.b64encode(buffered.getvalue()).decode()
+        
+        stats_dict = {
+            "regions": photo_stats["regions"],
+            "colors_used": photo_stats["colors_used"],
+            "max_colors_allowed": max_colors,
+            "color_mode": f"{max_colors}-color",
+            "graph_nodes": photo_stats["graph_nodes"],
+            "graph_edges": photo_stats["graph_edges"],
+            "pipeline": "unified_photo",
+        }
+        if size_metadata:
+            stats_dict["image_resized"] = size_metadata.get('resized', False)
+            stats_dict["original_size"] = size_metadata.get('original_size')
+            stats_dict["processed_size"] = size_metadata.get('final_size')
+        
+        return {
+            "success": True,
+            "image": f"data:image/png;base64,{img_base64}",
+            "stats": stats_dict,
+        }
+    
+    # =====================================================================
+    # LINE-ART / COLORING-BOOK PATH: traditional edge-based pipeline
+    # (unchanged from before — works well for actual line art images)
+    # =====================================================================
     
     # Step 1: Detect regions
-    is_line_art = convert_lineart
+    is_line_art = False  # convert_lineart is handled above now
     
     if use_ml_segmentation:
         # Use ML-based segmentation
         logger.info(f"Using ML segmentation (method: {segmentation_method}, target_regions: {target_regions})")
-        ml_detector = create_detector(method=segmentation_method, min_region_area=200 if is_line_art else 100, target_regions=target_regions)
+        ml_detector = create_detector(method=segmentation_method, min_region_area=100, target_regions=target_regions)
         seg_result = ml_detector.segment(image_np)
         labeled_regions = seg_result.labeled_regions
         num_regions = seg_result.num_regions
@@ -463,7 +521,7 @@ def process_pipeline(
                     adjacency[r2].add(r1)
     else:
         # Use traditional edge-based detection
-        detector = RegionDetector(min_region_area=200 if is_line_art else 100, is_line_art=is_line_art)
+        detector = RegionDetector(min_region_area=100, is_line_art=is_line_art)
         labeled_regions, contours, stats = detector.detect_regions(image_np)
         num_regions = len(contours)
         
@@ -472,7 +530,7 @@ def process_pipeline(
             logger.warning(f"Very complex image detected: {num_regions} regions. Processing may be slow.")
             if num_regions > 5000:
                 logger.warning("Too many regions, increasing minimum area threshold")
-                detector = RegionDetector(min_region_area=500 if is_line_art else 300, is_line_art=is_line_art)
+                detector = RegionDetector(min_region_area=300, is_line_art=is_line_art)
                 labeled_regions, contours, stats = detector.detect_regions(image_np)
                 num_regions = len(contours)
                 logger.info(f"After threshold increase: {num_regions} regions")
@@ -488,7 +546,6 @@ def process_pipeline(
         logger.warning(f"Large graph detected: {graph.number_of_nodes()} nodes. Coloring may take time.")
     
     # Step 3: Solve coloring (4 or 5 colors)
-    max_colors = 5 if use_five_colors else 4
     color_solver = FourColorSolver(max_colors=max_colors)
     coloring = color_solver.solve(graph)
     
@@ -525,7 +582,8 @@ def process_pipeline(
         "max_colors_allowed": max_colors,
         "color_mode": "5-color" if use_five_colors else "4-color",
         "graph_nodes": graph.number_of_nodes(),
-        "graph_edges": graph.number_of_edges()
+        "graph_edges": graph.number_of_edges(),
+        "pipeline": "line_art",
     }
     
     # Add size metadata if available
@@ -539,6 +597,32 @@ def process_pipeline(
         "image": f"data:image/png;base64,{img_base64}",
         "stats": stats_dict
     }
+
+
+def _get_palette(
+    style: str,
+    custom_colors: Optional[List[List[int]]],
+    max_colors: int,
+) -> List[List[int]]:
+    """Resolve palette from style name or custom colours."""
+    if custom_colors and len(custom_colors) > 0:
+        palette = list(custom_colors)
+        while len(palette) < max_colors:
+            palette.append(palette[-1] if palette else [128, 128, 128])
+        return palette
+
+    palettes = {
+        "vibrant": [[220,20,60],[0,191,255],[50,205,50],[255,215,0]],
+        "pastel":  [[255,182,193],[176,224,230],[152,251,152],[255,255,224]],
+        "earth":   [[160,82,45],[107,142,35],[210,180,140],[139,90,43]],
+        "monochrome": [[64,64,64],[128,128,128],[192,192,192],[224,224,224]],
+        "ocean":   [[0,119,190],[64,224,208],[0,191,255],[25,25,112]],
+        "sunset":  [[255,140,0],[255,20,147],[255,69,0],[255,192,203]],
+        "forest":  [[34,139,34],[85,107,47],[107,142,35],[139,90,43]],
+        "neon":    [[255,0,255],[0,255,255],[255,255,0],[0,255,0]],
+    }
+    return palettes.get(style, palettes["vibrant"])
+
 
 def apply_colors(labeled_regions: np.ndarray, coloring: Dict[int, int], style: str, custom_colors: Optional[List[List[int]]] = None) -> np.ndarray:
     """Apply colors to regions based on style or custom colors."""
