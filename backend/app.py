@@ -19,7 +19,11 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 from core.photo_to_lineart import convert_photo_to_lineart
-from core.photo_processor import process_photo, process_coloring_book
+from core.photo_processor import (
+    process_photo,
+    process_coloring_book,
+    is_coloring_book,
+)
 from utils.image_utils import optimize_image_size, validate_image_file, upscale_image
 
 app = FastAPI(title="4-Color Theorem API")
@@ -50,7 +54,7 @@ if os.path.isdir("static"):
 
 @app.get("/")
 async def root():
-    return {"message": "4-Color Theorem API", "version": "0.6.0"}
+    return {"message": "4-Color Theorem API", "version": "0.7.0"}
 
 
 @app.get("/health")
@@ -83,25 +87,22 @@ async def preview_image(
         preview_max = min(int(max_dimension), 400)
         image_np, _ = optimize_image_size(image_np, max_dimension=preview_max)
 
-        convert_lineart = convert_to_lineart.lower() in ("true", "1", "yes", "on")
+        force_photo = convert_to_lineart.lower() in ("true", "1", "yes", "on")
 
         result = process_pipeline(
-            image_np,
-            style,
+            image_np, style,
             stained_glass_enabled=False,
-            convert_lineart=convert_lineart,
+            force_photo_pipeline=force_photo,
             size_metadata=None,
         )
 
         processing_time = round((time.time() - start_time) * 1000, 2)
-        return JSONResponse(
-            content={
-                "success": True,
-                "preview": result["image"],
-                "preview_size": (image_np.shape[1], image_np.shape[0]),
-                "processing_time_ms": processing_time,
-            }
-        )
+        return JSONResponse(content={
+            "success": True,
+            "preview": result["image"],
+            "preview_size": (image_np.shape[1], image_np.shape[0]),
+            "processing_time_ms": processing_time,
+        })
     except HTTPException:
         raise
     except Exception as e:
@@ -139,7 +140,7 @@ async def process_image(
         image_np, size_metadata = optimize_image_size(image_np, max_dimension=3000)
 
         stained_glass_enabled = stained_glass.lower() in ("true", "1", "yes", "on")
-        convert_lineart = convert_to_lineart.lower() in ("true", "1", "yes", "on")
+        force_photo = convert_to_lineart.lower() in ("true", "1", "yes", "on")
         use_five_colors_bool = use_five_colors.lower() in ("true", "1", "yes", "on")
 
         custom_colors_list = None
@@ -158,10 +159,9 @@ async def process_image(
                 custom_colors_list = None
 
         result = process_pipeline(
-            image_np,
-            style,
-            stained_glass_enabled,
-            convert_lineart=convert_lineart,
+            image_np, style,
+            stained_glass_enabled=stained_glass_enabled,
+            force_photo_pipeline=force_photo,
             size_metadata=size_metadata,
             use_five_colors=use_five_colors_bool,
             custom_colors=custom_colors_list,
@@ -200,18 +200,17 @@ async def preview_lineart(
         image_np = np.array(image)
         contrast_float = float(contrast) if contrast else 1.0
         line_art = convert_photo_to_lineart(
-            image_np,
-            line_thickness=line_thickness,
-            detail_level=detail_level,
-            contrast=contrast_float,
+            image_np, line_thickness=line_thickness,
+            detail_level=detail_level, contrast=contrast_float,
         )
         result_pil = Image.fromarray(line_art)
         buffered = io.BytesIO()
         result_pil.save(buffered, format="PNG")
         img_base64 = base64.b64encode(buffered.getvalue()).decode()
-        return JSONResponse(
-            content={"success": True, "image": f"data:image/png;base64,{img_base64}"}
-        )
+        return JSONResponse(content={
+            "success": True,
+            "image": f"data:image/png;base64,{img_base64}",
+        })
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -224,31 +223,39 @@ def process_pipeline(
     image_np: np.ndarray,
     style: str,
     stained_glass_enabled: bool = False,
-    convert_lineart: bool = False,
+    force_photo_pipeline: bool = False,
     size_metadata: Optional[Dict] = None,
     use_five_colors: bool = False,
     custom_colors: Optional[List[List[int]]] = None,
 ) -> Dict[str, Any]:
-    """Route to the correct pipeline and return the result dict."""
-
+    """
+    Route to the correct pipeline:
+    - If force_photo_pipeline is True (user toggled "Convert Photo to Line Art"),
+      always use the photo pipeline.
+    - Otherwise, auto-detect: coloring book images → coloring book pipeline,
+      photos → photo pipeline.
+    """
     max_colors = 5 if use_five_colors else 4
     palette = _get_palette(style, custom_colors, max_colors)
 
-    # Pick pipeline
-    if convert_lineart:
-        # Photo → unified K-means pipeline
-        logger.info("Routing to: photo pipeline")
+    # Decide which pipeline to use
+    if force_photo_pipeline:
+        use_photo = True
+        logger.info("Pipeline: photo (forced by user toggle)")
+    else:
+        use_photo = not is_coloring_book(image_np)
+        logger.info(f"Pipeline: {'photo' if use_photo else 'coloring_book'} (auto-detected)")
+
+    if use_photo:
         colored_image, stats = process_photo(
             image_np, palette=palette, n_clusters=8,
             min_region_area=200, max_colors=max_colors,
         )
-        pipeline_name = "unified_photo"
+        pipeline_name = "photo"
     else:
-        # Coloring book / line art → edge-based pipeline
-        logger.info("Routing to: coloring book pipeline")
         colored_image, stats = process_coloring_book(
             image_np, palette=palette,
-            min_region_area=100, max_colors=max_colors,
+            min_region_area=50, max_colors=max_colors,
         )
         pipeline_name = "coloring_book"
 
@@ -261,12 +268,12 @@ def process_pipeline(
         except Exception as e:
             logger.warning(f"Stained glass failed: {e}")
 
-    # Upscale if image was resized for processing
+    # Upscale if needed
     if size_metadata and size_metadata.get("resized", False):
         scale_factor = 1.0 / size_metadata["scale_factor"]
         colored_image = upscale_image(colored_image, scale_factor, method="lanczos")
 
-    # Encode result
+    # Encode
     result_pil = Image.fromarray(colored_image)
     buffered = io.BytesIO()
     result_pil.save(buffered, format="PNG")
@@ -293,11 +300,7 @@ def process_pipeline(
     }
 
 
-def _get_palette(
-    style: str,
-    custom_colors: Optional[List[List[int]]],
-    max_colors: int,
-) -> List[List[int]]:
+def _get_palette(style, custom_colors, max_colors):
     if custom_colors and len(custom_colors) > 0:
         palette = list(custom_colors)
         while len(palette) < max_colors:
