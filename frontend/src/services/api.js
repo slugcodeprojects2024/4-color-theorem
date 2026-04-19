@@ -12,8 +12,7 @@ export const processImage = async (
   style = 'vibrant',
   stainedGlassEnabled = false,
   lineArtSettings = null,
-  mlSettings = null,  // kept for backwards compat, ignored
-  useFiveColors = false,
+  mlSettings = null, // kept for backwards compat, ignored
   customColors = null
 ) => {
   const formData = new FormData();
@@ -30,7 +29,7 @@ export const processImage = async (
     formData.append('convert_to_lineart', 'false');
   }
 
-  formData.append('use_five_colors', useFiveColors ? 'true' : 'false');
+  formData.append('use_five_colors', 'false');
 
   if (customColors && Array.isArray(customColors) && customColors.length > 0) {
     formData.append('custom_colors', JSON.stringify(customColors));

@@ -7,7 +7,6 @@ import StyleSelector from './components/StyleSelector';
 import StainedGlassToggle from './components/StainedGlassToggle';
 import LineArtConverter from './components/LineArtConverter';
 import ImageHistory from './components/ImageHistory';
-import FiveColorToggle from './components/FiveColorToggle';
 import EducationalPage from './components/EducationalPage';
 import GalleryPage from './components/GalleryPage';
 import { processImage, checkServerStatus } from './services/api';
@@ -29,7 +28,6 @@ function App() {
   const [stats, setStats] = useState(null);
   const [error, setError] = useState(null);
   const [serverStatus, setServerStatus] = useState(null);
-  const [useFiveColors, setUseFiveColors] = useState(false);
   const [showEducationalPage, setShowEducationalPage] = useState(false);
   const [showGalleryPage, setShowGalleryPage] = useState(false);
 
@@ -79,8 +77,7 @@ function App() {
         selectedStyle,
         false, // Stained glass handled on frontend
         lineArtConfig,
-        null,  // ML segmentation removed
-        useFiveColors
+        null // ML segmentation removed
       );
 
       console.log('Processing result received:', {
@@ -267,10 +264,6 @@ function App() {
               selectedStyle={selectedStyle}
               onStyleChange={handleStyleChange}
             />
-            <FiveColorToggle
-              enabled={useFiveColors}
-              onToggle={setUseFiveColors}
-            />
             <LineArtConverter
               enabled={lineArtEnabled}
               onToggle={handleLineArtToggle}
@@ -307,7 +300,7 @@ function App() {
       </main>
 
       <footer className="App-footer">
-        <p>Upload a coloring book style image to automatically color it with 4 or 5 colors</p>
+        <p>Upload a coloring book style image to automatically color it with 4 colors</p>
       </footer>
     </div>
   );
