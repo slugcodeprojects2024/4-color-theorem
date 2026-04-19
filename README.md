@@ -6,8 +6,6 @@ https://www.fourcolordemo.com/
 ## Features
 
 - **Automatic Image Coloring**: Uses graph theory to color images with 4 or 5 colors
-- **AI-Powered Color Suggestions**: Hybrid OpenCV + Browser AI (CLIP) system for smart color palette suggestions
-- **ML-Enhanced Region Detection**: SLIC superpixel segmentation for better region detection
 - **Line Art Conversion**: Convert photos to line art before coloring
 - **Stained Glass Effect**: Optional visual effect for colored images
 - **Multiple Color Palettes**: Vibrant, pastel, earth tones, monochrome, ocean, sunset, forest, and neon
