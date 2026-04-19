@@ -98,21 +98,11 @@ If it doesn't open automatically, navigate to: `http://localhost:3000`
 1. **Upload an Image**: Click "Choose Image" or drag and drop an image file
 2. **Select Style**: Choose a color palette style (vibrant, pastel, earth, etc.)
 3. **Optional Features**:
-   - Enable "Smart Color Suggestions" for AI-powered palette recommendations
-   - Enable "ML Segmentation" for better region detection
-   - Enable "5-Color Mode" for complex images
    - Enable "Line Art Converter" to convert photos to line art first
    - Enable "Stained Glass Effect" for visual enhancement
 4. **Process Image**: Click "Process Image" to generate the colored result
 5. **Download**: Use the download button to save your colored image
 
-### Smart Color Suggestions
-
-When enabled, the AI color suggestion system provides:
-- **Layer 1 (Instant)**: Server-side OpenCV pattern analysis for immediate suggestions
-- **Layer 2 (Optional)**: Browser-based AI using CLIP model (~150MB download, cached after first use)
-
-Click on any suggested palette to automatically process the image with those colors.
 
 ## Development
 
@@ -122,7 +112,6 @@ The backend is built with:
 - FastAPI (Python web framework)
 - OpenCV (image processing)
 - NetworkX (graph algorithms)
-- scikit-image (ML segmentation)
 - Transformers.js compatible API
 
 ### Frontend Development
