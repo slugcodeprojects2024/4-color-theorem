@@ -7,9 +7,7 @@ import StyleSelector from './components/StyleSelector';
 import StainedGlassToggle from './components/StainedGlassToggle';
 import LineArtConverter from './components/LineArtConverter';
 import ImageHistory from './components/ImageHistory';
-import SegmentationSettings from './components/SegmentationSettings';
 import FiveColorToggle from './components/FiveColorToggle';
-import SmartColorSuggester from './components/SmartColorSuggester';
 import EducationalPage from './components/EducationalPage';
 import GalleryPage from './components/GalleryPage';
 import { processImage, checkServerStatus } from './services/api';
@@ -31,12 +29,7 @@ function App() {
   const [stats, setStats] = useState(null);
   const [error, setError] = useState(null);
   const [serverStatus, setServerStatus] = useState(null);
-  const [useMLSegmentation, setUseMLSegmentation] = useState(false);
-  const [segmentationMethod, setSegmentationMethod] = useState('auto');
-  const [targetRegions, setTargetRegions] = useState(50);
   const [useFiveColors, setUseFiveColors] = useState(false);
-  const [selectedPalette, setSelectedPalette] = useState(null);
-  const [enableSmartColorSuggestions, setEnableSmartColorSuggestions] = useState(false);
   const [showEducationalPage, setShowEducationalPage] = useState(false);
   const [showGalleryPage, setShowGalleryPage] = useState(false);
 
@@ -52,105 +45,6 @@ function App() {
     setProcessedImage(null);
     setStats(null);
     setError(null);
-  };
-
-  const handleProcessWithColors = async (colors) => {
-    if (!selectedImage) {
-      setError('Please select an image first');
-      return;
-    }
-
-    // Check server status before processing
-    try {
-      await checkServerStatus();
-      setServerStatus('connected');
-    } catch (err) {
-      setServerStatus('disconnected');
-      setError('Server is not available. Please ensure the backend is running on port 8000.');
-      return;
-    }
-
-    setIsProcessing(true);
-    setError(null);
-
-    try {
-      // Prepare line art settings if enabled
-      const lineArtConfig = lineArtEnabled ? {
-        enabled: true,
-        ...lineArtSettings
-      } : null;
-      
-      // Prepare ML segmentation settings
-      const mlConfig = useMLSegmentation ? {
-        enabled: true,
-        method: segmentationMethod,
-        targetRegions: targetRegions
-      } : null;
-      
-      // Process image with custom colors
-      const result = await processImage(
-        selectedImage, 
-        selectedStyle, 
-        false, // Stained glass handled on frontend
-        lineArtConfig,
-        mlConfig,
-        useFiveColors,
-        colors // Pass custom colors
-      );
-      
-      console.log('Processing result received:', {
-        success: result.success,
-        hasImage: !!result.image,
-        imageLength: result.image?.length,
-        hasStats: !!result.stats,
-        stats: result.stats
-      });
-      
-      if (!result || !result.image) {
-        throw new Error('Server returned invalid response - no image data received');
-      }
-      
-      let finalImage = result.image;
-      
-      // Apply WebGL stained glass effect on frontend if enabled
-      if (stainedGlassEnabled) {
-        try {
-          console.log('Applying stained glass effect (intensity: 1.0)...');
-          finalImage = await applyStainedGlassEffect(result.image, 1.0);
-          console.log('Stained glass effect applied successfully');
-        } catch (stainedGlassError) {
-          console.warn('Stained glass effect failed, using original:', stainedGlassError);
-          finalImage = result.image;
-        }
-      }
-      
-      setProcessedImage(finalImage);
-      setStats(result.stats);
-      
-      // Save to history
-      try {
-        saveImageToHistory(finalImage, getCurrentSettings(), result.stats);
-      } catch (err) {
-        console.warn('Failed to save to history:', err);
-      }
-    } catch (err) {
-      let errorMessage = err.message || 'Failed to process image';
-      
-      if (errorMessage.includes('too large') || errorMessage.includes('size')) {
-        errorMessage = 'Image is too large. Please use an image smaller than 50MB or 10000x10000px.';
-      } else if (errorMessage.includes('format') || errorMessage.includes('Invalid')) {
-        errorMessage = 'Invalid image format. Please use PNG, JPG, or JPEG.';
-      } else if (errorMessage.includes('timeout') || errorMessage.includes('long')) {
-        errorMessage = 'Processing took too long. Try a smaller image or disable some effects.';
-      } else if (errorMessage.includes('Network') || errorMessage.includes('Cannot connect')) {
-        errorMessage = 'Cannot connect to server. Please ensure the backend is running on port 8000.';
-      }
-      
-      setError(errorMessage);
-      console.error('Processing error:', err);
-    } finally {
-      setIsProcessing(false);
-    }
   };
 
   const handleProcess = async () => {
@@ -178,24 +72,17 @@ function App() {
         enabled: true,
         ...lineArtSettings
       } : null;
-      
-      // Prepare ML segmentation settings
-      const mlConfig = useMLSegmentation ? {
-        enabled: true,
-        method: segmentationMethod,
-        targetRegions: targetRegions
-      } : null;
-      
+
       // Process image with all settings
       const result = await processImage(
-        selectedImage, 
-        selectedStyle, 
+        selectedImage,
+        selectedStyle,
         false, // Stained glass handled on frontend
         lineArtConfig,
-        mlConfig,
+        null,  // ML segmentation removed
         useFiveColors
       );
-      
+
       console.log('Processing result received:', {
         success: result.success,
         hasImage: !!result.image,
@@ -203,51 +90,37 @@ function App() {
         hasStats: !!result.stats,
         stats: result.stats
       });
-      
+
       if (!result || !result.image) {
         throw new Error('Server returned invalid response - no image data received');
       }
-      
+
       let finalImage = result.image;
-      
-      // Apply WebGL stained glass effect on frontend if enabled (GPU-accelerated)
+
+      // Apply WebGL stained glass effect on frontend if enabled
       if (stainedGlassEnabled) {
         try {
           console.log('Applying stained glass effect (intensity: 1.0)...');
-          console.log('Original image data URL length:', result.image.length);
-          
-          // Apply effect with high intensity for maximum visibility
           finalImage = await applyStainedGlassEffect(result.image, 1.0);
-          
           console.log('Stained glass effect applied successfully');
-          console.log('Final image data URL length:', finalImage.length);
-          
-          // Verify the image changed
-          if (finalImage === result.image) {
-            console.warn('Warning: Stained glass effect may not have been applied (images are identical)');
-          }
         } catch (effectError) {
           console.error('Stained glass effect failed:', effectError);
-          console.error('Error details:', effectError.stack);
-          // If effect fails, still show the colored image
           finalImage = result.image;
         }
       }
-      
+
       setProcessedImage(finalImage);
       setStats(result.stats);
-      
+
       // Save to history (with error handling)
       try {
         saveImageToHistory(finalImage, getCurrentSettings(), result.stats);
       } catch (err) {
         console.warn('Failed to save to history:', err);
-        // Don't show error to user - history is optional
       }
     } catch (err) {
       let errorMessage = err.message || 'Failed to process image';
-      
-      // Provide helpful error messages
+
       if (errorMessage.includes('too large') || errorMessage.includes('size')) {
         errorMessage = 'Image is too large. Please use an image smaller than 50MB or 10000x10000px.';
       } else if (errorMessage.includes('format') || errorMessage.includes('Invalid')) {
@@ -257,7 +130,7 @@ function App() {
       } else if (errorMessage.includes('Network') || errorMessage.includes('Cannot connect')) {
         errorMessage = 'Cannot connect to server. Please ensure the backend is running:\n\n1. Open terminal in the backend folder\n2. Run: python app.py\n3. Server should start on http://localhost:8000';
       }
-      
+
       setError(errorMessage);
       console.error('Processing error:', err);
     } finally {
@@ -268,7 +141,6 @@ function App() {
   const handleStyleChange = (style) => {
     setSelectedStyle(style);
   };
-
 
   const handleStainedGlassToggle = (enabled) => {
     setStainedGlassEnabled(enabled);
@@ -307,7 +179,6 @@ function App() {
     }
   };
 
-
   // Show educational page if requested
   if (showEducationalPage) {
     return <EducationalPage onBack={() => setShowEducationalPage(false)} />;
@@ -324,7 +195,7 @@ function App() {
         <h1>Four Color Theorem</h1>
         <p className="subtitle">Automatic Image Coloring using Graph Theory</p>
         <div style={{ display: 'flex', gap: '10px', marginTop: '15px', flexWrap: 'wrap', justifyContent: 'center' }}>
-          <button 
+          <button
             className="educational-link"
             onClick={() => setShowEducationalPage(true)}
             style={{
@@ -340,7 +211,7 @@ function App() {
           >
             Learn About the Theorem
           </button>
-          <button 
+          <button
             className="gallery-link"
             onClick={() => setShowGalleryPage(true)}
             style={{
@@ -381,9 +252,9 @@ function App() {
           {selectedImage && (
             <div className="preview-section">
               <h3>Original Image</h3>
-              <img 
-                src={URL.createObjectURL(selectedImage)} 
-                alt="Selected" 
+              <img
+                src={URL.createObjectURL(selectedImage)}
+                alt="Selected"
                 className="preview-image"
               />
             </div>
@@ -391,68 +262,30 @@ function App() {
         </div>
 
         {selectedImage && (
-          <>
-            {enableSmartColorSuggestions && (
-              <SmartColorSuggester
-                imageFile={selectedImage}
-                onSelectPalette={(palette) => {
-                  setSelectedPalette(palette);
-                  // Automatically process image with selected palette colors
-                  if (palette && palette.colors) {
-                    handleProcessWithColors(palette.colors);
-                  }
-                }}
-                selectedPaletteId={selectedPalette?.id}
-                useFiveColors={useFiveColors}
-              />
-            )}
-            <div className="controls-section">
-              <div className="setting-group" style={{ marginBottom: '16px', padding: '16px', background: 'white', border: '1px solid #e0e0e0', borderRadius: '8px' }}>
-                <label className="toggle-label" style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', fontWeight: '500', color: '#333' }}>
-                  <input
-                    type="checkbox"
-                    checked={enableSmartColorSuggestions}
-                    onChange={(e) => setEnableSmartColorSuggestions(e.target.checked)}
-                    style={{ width: '18px', height: '18px', cursor: 'pointer' }}
-                  />
-                  <span>Enable Smart Color Suggestions</span>
-                </label>
-                <p className="setting-description" style={{ fontSize: '0.85em', color: '#666', margin: '8px 0 0 28px', lineHeight: '1.4' }}>
-                  Get AI-powered color palette suggestions based on your image content
-                </p>
-              </div>
-              <StyleSelector 
-                selectedStyle={selectedStyle} 
-                onStyleChange={handleStyleChange} 
-              />
-              <SegmentationSettings
-                useMLSegmentation={useMLSegmentation}
-                onToggleML={setUseMLSegmentation}
-                segmentationMethod={segmentationMethod}
-                onMethodChange={setSegmentationMethod}
-                targetRegions={targetRegions}
-                onTargetRegionsChange={setTargetRegions}
-              />
-              <FiveColorToggle
-                enabled={useFiveColors}
-                onToggle={setUseFiveColors}
-              />
-              <LineArtConverter
-                enabled={lineArtEnabled}
-                onToggle={handleLineArtToggle}
-                settings={lineArtSettings}
-                onSettingsChange={handleLineArtSettingsChange}
-              />
-              <StainedGlassToggle 
-                enabled={stainedGlassEnabled} 
-                onToggle={handleStainedGlassToggle} 
-              />
-              <ProcessButton 
-                onProcess={handleProcess} 
-                disabled={isProcessing} 
-              />
-            </div>
-          </>
+          <div className="controls-section">
+            <StyleSelector
+              selectedStyle={selectedStyle}
+              onStyleChange={handleStyleChange}
+            />
+            <FiveColorToggle
+              enabled={useFiveColors}
+              onToggle={setUseFiveColors}
+            />
+            <LineArtConverter
+              enabled={lineArtEnabled}
+              onToggle={handleLineArtToggle}
+              settings={lineArtSettings}
+              onSettingsChange={handleLineArtSettingsChange}
+            />
+            <StainedGlassToggle
+              enabled={stainedGlassEnabled}
+              onToggle={handleStainedGlassToggle}
+            />
+            <ProcessButton
+              onProcess={handleProcess}
+              disabled={isProcessing}
+            />
+          </div>
         )}
 
         <ImageHistory onSelectHistoryItem={handleSelectHistoryItem} />
@@ -466,9 +299,9 @@ function App() {
         )}
 
         {processedImage && (
-          <ResultViewer 
-            image={processedImage} 
-            stats={stats} 
+          <ResultViewer
+            image={processedImage}
+            stats={stats}
           />
         )}
       </main>
@@ -481,4 +314,3 @@ function App() {
 }
 
 export default App;
-

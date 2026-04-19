@@ -8,11 +8,11 @@ const api = axios.create({
 });
 
 export const processImage = async (
-  imageFile, 
-  style = 'vibrant', 
+  imageFile,
+  style = 'vibrant',
   stainedGlassEnabled = false,
   lineArtSettings = null,
-  mlSettings = null,
+  mlSettings = null,  // kept for backwards compat, ignored
   useFiveColors = false,
   customColors = null
 ) => {
@@ -20,7 +20,7 @@ export const processImage = async (
   formData.append('file', imageFile);
   formData.append('style', style);
   formData.append('stained_glass', stainedGlassEnabled ? 'true' : 'false');
-  
+
   if (lineArtSettings && lineArtSettings.enabled) {
     formData.append('convert_to_lineart', 'true');
     formData.append('line_thickness', lineArtSettings.lineThickness || 'medium');
@@ -30,19 +30,8 @@ export const processImage = async (
     formData.append('convert_to_lineart', 'false');
   }
 
-  // Add ML segmentation settings if provided
-  if (mlSettings) {
-    formData.append('use_ml', mlSettings.enabled ? 'true' : 'false');
-    formData.append('segmentation_method', mlSettings.method || 'auto');
-    formData.append('target_regions', String(mlSettings.targetRegions || 50));
-  } else {
-    formData.append('use_ml', 'false');
-  }
-
-  // Add 5-color mode setting
   formData.append('use_five_colors', useFiveColors ? 'true' : 'false');
-  
-  // Add custom colors if provided
+
   if (customColors && Array.isArray(customColors) && customColors.length > 0) {
     formData.append('custom_colors', JSON.stringify(customColors));
   }
@@ -62,7 +51,7 @@ export const processImage = async (
       imageLength: response.data?.image?.length,
       hasStats: !!response.data?.stats
     });
-    
+
     if (response.data.success) {
       if (!response.data.image) {
         throw new Error('Server response missing image data');
@@ -121,75 +110,4 @@ export const checkServerStatus = async () => {
   }
 };
 
-export const analyzeImage = async (imageFile) => {
-  const formData = new FormData();
-  formData.append('file', imageFile);
-
-  try {
-    const response = await api.post('/api/analyze', formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data',
-      },
-    });
-
-    if (response.data.success) {
-      return response.data;
-    } else {
-      throw new Error(response.data.error || 'Analysis failed');
-    }
-  } catch (error) {
-    if (error.response) {
-      throw new Error(error.response.data.detail || 'Server error');
-    } else if (error.request) {
-      throw new Error('Network error - please check if the server is running');
-    } else {
-      throw new Error(error.message || 'An error occurred');
-    }
-  }
-};
-
-export const suggestPalettes = async (imageFile, n = 5) => {
-  const formData = new FormData();
-  formData.append('file', imageFile);
-  formData.append('n', String(n));
-
-  try {
-    const response = await api.post('/api/suggest-palettes', formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data',
-      },
-    });
-
-    if (response.data.success) {
-      return response.data;
-    } else {
-      throw new Error(response.data.error || 'Palette suggestion failed');
-    }
-  } catch (error) {
-    if (error.response) {
-      throw new Error(error.response.data.detail || 'Server error');
-    } else if (error.request) {
-      throw new Error('Network error - please check if the server is running');
-    } else {
-      throw new Error(error.message || 'An error occurred');
-    }
-  }
-};
-
-export const getPalettes = async () => {
-  try {
-    const response = await api.get('/api/palettes');
-    return response.data;
-  } catch (error) {
-    if (error.response) {
-      throw new Error(error.response.data.detail || 'Server error');
-    } else if (error.request) {
-      throw new Error('Network error - please check if the server is running');
-    } else {
-      throw new Error(error.message || 'An error occurred');
-    }
-  }
-};
-
 export default api;
-
