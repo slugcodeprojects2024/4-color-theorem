@@ -65,39 +65,66 @@ def _fill_unlabeled(labeled: np.ndarray) -> np.ndarray:
 
 
 def _filter_regions(labeled, min_area):
-    sizes = Counter(labeled.flatten())
-    vmap = {}
+    # Build a lookup table: old_label -> new_label (0 = removed)
+    unique_labels, counts = np.unique(labeled, return_counts=True)
+    max_label = int(unique_labels.max()) + 1
+    lut = np.zeros(max_label, dtype=np.int32)
     nl = 1
-    for ol in sorted(sizes.keys()):
-        if ol == 0:
+    for label, count in zip(unique_labels, counts):
+        if label == 0:
             continue
-        if sizes[ol] >= min_area:
-            vmap[ol] = nl
+        if count >= min_area:
+            lut[label] = nl
             nl += 1
-    filtered = np.zeros_like(labeled, dtype=np.int32)
-    for o, n in vmap.items():
-        filtered[labeled == o] = n
+    # Apply lookup table (vectorized, no per-region loop)
+    filtered = lut[labeled]
     filtered = _fill_unlabeled(filtered)
     valid_labels = sorted(set(filtered.flatten()) - {0})
     return filtered, valid_labels
 
 
 def _build_adjacency(filtered, valid_labels, radius=4):
-    h, w = filtered.shape
-    adj: Dict[int, set] = {r: set() for r in valid_labels}
-    for y in range(h):
-        for x in range(w - radius):
-            s1, s2 = int(filtered[y, x]), int(filtered[y, x + radius])
-            if s1 > 0 and s2 > 0 and s1 != s2:
-                adj[s1].add(s2)
-                adj[s2].add(s1)
-    for y in range(h - radius):
-        for x in range(w):
-            s1, s2 = int(filtered[y, x]), int(filtered[y + radius, x])
-            if s1 > 0 and s2 > 0 and s1 != s2:
-                adj[s1].add(s2)
-                adj[s2].add(s1)
-    return adj
+    """Vectorized adjacency detection using NumPy array operations."""
+    from collections import defaultdict
+
+    # Horizontal: compare pixels `radius` apart
+    left = filtered[:, :-radius].ravel()
+    right = filtered[:, radius:].ravel()
+    hmask = (left != right) & (left > 0) & (right > 0)
+
+    # Vertical: compare pixels `radius` apart
+    top = filtered[:-radius, :].ravel()
+    bottom = filtered[radius:, :].ravel()
+    vmask = (top != bottom) & (top > 0) & (bottom > 0)
+
+    # Combine all adjacent pairs
+    p1 = np.concatenate([left[hmask], top[vmask]])
+    p2 = np.concatenate([right[hmask], bottom[vmask]])
+
+    if len(p1) == 0:
+        return {r: set() for r in valid_labels}
+
+    # Deduplicate: pack sorted pairs into int64
+    mins = np.minimum(p1, p2).astype(np.int64)
+    maxs = np.maximum(p1, p2).astype(np.int64)
+    packed = (mins << 32) | maxs
+    unique_packed = np.unique(packed)
+
+    # Unpack into adjacency dict
+    u1 = (unique_packed >> 32).astype(int)
+    u2 = (unique_packed & 0xFFFFFFFF).astype(int)
+
+    adj = defaultdict(set)
+    for s1, s2 in zip(u1.tolist(), u2.tolist()):
+        adj[s1].add(s2)
+        adj[s2].add(s1)
+
+    # Ensure all valid labels have an entry
+    for r in valid_labels:
+        if r not in adj:
+            adj[r] = set()
+
+    return dict(adj)
 
 
 def _graph_color(valid_labels, adjacency, max_colors):
@@ -143,6 +170,13 @@ def _area_balance(coloring, region_areas, adjacency, max_colors,
     return balanced
 
 
+def _compute_areas(filtered, valid_labels):
+    """Vectorized region area calculation."""
+    unique, counts = np.unique(filtered, return_counts=True)
+    area_map = dict(zip(unique.tolist(), counts.tolist()))
+    return {r: area_map.get(r, 0) for r in valid_labels}
+
+
 def _make_stats(valid_labels, balanced, G):
     return {
         "regions": len(valid_labels),
@@ -175,12 +209,31 @@ def process_photo(
     enhanced_rgb = cv2.cvtColor(lab, cv2.COLOR_LAB2RGB)
     enhanced_gray = cv2.cvtColor(enhanced_rgb, cv2.COLOR_RGB2GRAY)
 
-    # K-means cluster boundaries
+    # K-means cluster boundaries (subsampled for speed)
     pixels = image_rgb.reshape(-1, 3).astype(np.float32)
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
-    _, labels_km, _ = cv2.kmeans(
-        pixels, n_clusters, None, criteria, 3, cv2.KMEANS_PP_CENTERS
-    )
+
+    max_kmeans_samples = 100_000
+    if len(pixels) > max_kmeans_samples:
+        sample_idx = np.random.choice(len(pixels), max_kmeans_samples, replace=False)
+        _, _, centers = cv2.kmeans(
+            pixels[sample_idx], n_clusters, None, criteria, 3, cv2.KMEANS_PP_CENTERS
+        )
+        # Assign all pixels to nearest center in chunks
+        labels_km = np.zeros(len(pixels), dtype=np.int32)
+        chunk_size = 500_000
+        for i in range(0, len(pixels), chunk_size):
+            chunk = pixels[i : i + chunk_size]
+            dists = np.linalg.norm(
+                chunk[:, None, :] - centers[None, :, :], axis=2
+            )
+            labels_km[i : i + chunk_size] = np.argmin(dists, axis=1)
+    else:
+        _, labels_km, _ = cv2.kmeans(
+            pixels, n_clusters, None, criteria, 3, cv2.KMEANS_PP_CENTERS
+        )
+        labels_km = labels_km.ravel()
+
     clustered = labels_km.reshape(h, w).astype(np.uint8)
     kc = cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3))
     cluster_edges = (
@@ -217,13 +270,15 @@ def process_photo(
 
     adjacency = _build_adjacency(filtered, valid_labels, radius=3)
     coloring, G = _graph_color(valid_labels, adjacency, max_colors)
-    region_areas = {r: int(np.sum(filtered == r)) for r in valid_labels}
+    region_areas = _compute_areas(filtered, valid_labels)
     balanced = _area_balance(coloring, region_areas, adjacency, max_colors)
 
-    # Render
-    result = np.full((h, w, 3), 255, dtype=np.uint8)
-    for r in valid_labels:
-        result[filtered == r] = palette[balanced.get(r, 0) % len(palette)]
+    # Render using lookup table (vectorized, no per-region loop)
+    max_label = int(filtered.max()) + 1
+    color_lut = np.full((max_label, 3), 255, dtype=np.uint8)
+    for r, c in balanced.items():
+        color_lut[r] = palette[c % len(palette)]
+    result = color_lut[filtered]
     result[thickened > 0] = [0, 0, 0]
 
     return result, _make_stats(valid_labels, balanced, G)
@@ -300,13 +355,15 @@ def process_coloring_book(
 
     adjacency = _build_adjacency(filtered, valid_labels, radius=4)
     coloring, G = _graph_color(valid_labels, adjacency, max_colors)
-    region_areas = {r: int(np.sum(filtered == r)) for r in valid_labels}
+    region_areas = _compute_areas(filtered, valid_labels)
     balanced = _area_balance(coloring, region_areas, adjacency, max_colors)
 
-    # Render with original line art as outline source
-    result = np.full((h, w, 3), 255, dtype=np.uint8)
-    for r in valid_labels:
-        result[filtered == r] = palette[balanced.get(r, 0) % len(palette)]
+    # Render using lookup table (vectorized)
+    max_label = int(filtered.max()) + 1
+    color_lut = np.full((max_label, 3), 255, dtype=np.uint8)
+    for r, c in balanced.items():
+        color_lut[r] = palette[c % len(palette)]
+    result = color_lut[filtered]
 
     # Thin outline at boundaries, using original dark pixels
     if outline_thickness != "none":
