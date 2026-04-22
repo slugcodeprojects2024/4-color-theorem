@@ -137,7 +137,7 @@ async def process_image(
         if image.mode != "RGB":
             image = image.convert("RGB")
         image_np = np.array(image)
-        image_np, size_metadata = optimize_image_size(image_np, max_dimension=2500)
+        image_np, size_metadata = optimize_image_size(image_np, max_dimension=3000)
 
         stained_glass_enabled = stained_glass.lower() in ("true", "1", "yes", "on")
         force_photo = convert_to_lineart.lower() in ("true", "1", "yes", "on")
