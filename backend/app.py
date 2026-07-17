@@ -1,22 +1,23 @@
 """FastAPI backend for 4-color theorem app."""
+import asyncio
 import os
+import io
+import base64
+import time
+import json
+import logging
+from typing import Any, Callable, Dict, List, Optional
+from concurrent.futures import ThreadPoolExecutor
+
+import numpy as np
+from PIL import Image
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
-import numpy as np
-from PIL import Image
-import io
-import base64
-import time
-from typing import Dict, Any, Optional, List
-import logging
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 from core.photo_to_lineart import convert_photo_to_lineart
 from core.photo_processor import (
@@ -24,7 +25,11 @@ from core.photo_processor import (
     process_coloring_book,
     is_coloring_book,
 )
+from core.recolor_cache import recolor_cache, render_from_cache
 from utils.image_utils import optimize_image_size, validate_image_file, upscale_image
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="4-Color Theorem API")
 
@@ -51,16 +56,27 @@ app.add_middleware(
 if os.path.isdir("static"):
     app.mount("/static", StaticFiles(directory="static"), name="static")
 
+# Thread pool for CPU-bound processing (SSE streaming)
+_executor = ThreadPoolExecutor(max_workers=4)
+
+
+# ======================================================================
+# Health / root
+# ======================================================================
 
 @app.get("/")
 async def root():
-    return {"message": "4-Color Theorem API", "version": "0.7.0"}
+    return {"message": "4-Color Theorem API", "version": "0.8.0"}
 
 
 @app.get("/health")
 async def health():
     return {"status": "ok"}
 
+
+# ======================================================================
+# Preview (unchanged)
+# ======================================================================
 
 @app.post("/api/preview")
 @limiter.limit("120/minute")
@@ -111,6 +127,10 @@ async def preview_image(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ======================================================================
+# Process (original synchronous endpoint, now returns session_id)
+# ======================================================================
+
 @app.post("/api/process")
 @limiter.limit("60/minute")
 async def process_image(
@@ -143,20 +163,7 @@ async def process_image(
         force_photo = convert_to_lineart.lower() in ("true", "1", "yes", "on")
         use_five_colors_bool = use_five_colors.lower() in ("true", "1", "yes", "on")
 
-        custom_colors_list = None
-        if custom_colors:
-            try:
-                import json
-                custom_colors_list = json.loads(custom_colors)
-                if isinstance(custom_colors_list, list) and len(custom_colors_list) > 0:
-                    for color in custom_colors_list:
-                        if not (isinstance(color, list) and len(color) == 3):
-                            custom_colors_list = None
-                            break
-                else:
-                    custom_colors_list = None
-            except Exception:
-                custom_colors_list = None
+        custom_colors_list = _parse_custom_colors(custom_colors)
 
         result = process_pipeline(
             image_np, style,
@@ -182,6 +189,185 @@ async def process_image(
             error_detail = "Invalid image format. Please use PNG, JPG, or JPEG."
         raise HTTPException(status_code=500, detail=error_detail)
 
+
+# ======================================================================
+# Process with streaming progress (SSE)
+# ======================================================================
+
+@app.post("/api/process-stream")
+@limiter.limit("60/minute")
+async def process_image_stream(
+    request: Request,
+    file: UploadFile = File(...),
+    style: str = Form("vibrant"),
+    stained_glass: str = Form("false"),
+    convert_to_lineart: str = Form("false"),
+    line_thickness: str = Form("medium"),
+    detail_level: str = Form("detailed"),
+    contrast: str = Form("1.0"),
+    use_five_colors: str = Form("false"),
+    custom_colors: str = Form(None),
+):
+    """
+    Same processing as /api/process, but returns Server-Sent Events
+    with progress updates followed by the final result.
+
+    Events:
+      data: {"type":"progress","stage":"Detecting edges","progress":35}
+      data: {"type":"result","data":{...same as /api/process response...}}
+      data: {"type":"error","message":"..."}
+    """
+    # Parse all inputs synchronously before streaming
+    try:
+        contents = await file.read()
+        if not contents:
+            raise HTTPException(status_code=400, detail="Empty file")
+        is_valid, error_msg = validate_image_file(contents)
+        if not is_valid:
+            raise HTTPException(status_code=400, detail=error_msg)
+
+        image = Image.open(io.BytesIO(contents))
+        if image.mode != "RGB":
+            image = image.convert("RGB")
+        image_np = np.array(image)
+        image_np, size_metadata = optimize_image_size(image_np, max_dimension=3000)
+
+        stained_glass_enabled = stained_glass.lower() in ("true", "1", "yes", "on")
+        force_photo = convert_to_lineart.lower() in ("true", "1", "yes", "on")
+        use_five_colors_bool = use_five_colors.lower() in ("true", "1", "yes", "on")
+        custom_colors_list = _parse_custom_colors(custom_colors)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid input: {e}")
+
+    # Set up the progress bridge: worker thread -> async queue
+    progress_queue: asyncio.Queue = asyncio.Queue()
+    loop = asyncio.get_running_loop()
+
+    def progress_cb(stage: str, pct: int):
+        loop.call_soon_threadsafe(
+            progress_queue.put_nowait,
+            {"type": "progress", "stage": stage, "progress": pct},
+        )
+
+    def do_work():
+        return process_pipeline(
+            image_np, style,
+            stained_glass_enabled=stained_glass_enabled,
+            force_photo_pipeline=force_photo,
+            size_metadata=size_metadata,
+            use_five_colors=use_five_colors_bool,
+            custom_colors=custom_colors_list,
+            progress_cb=progress_cb,
+        )
+
+    async def event_stream():
+        future = loop.run_in_executor(_executor, do_work)
+
+        # Relay progress until processing finishes
+        while not future.done():
+            try:
+                msg = await asyncio.wait_for(progress_queue.get(), timeout=0.4)
+                yield f"data: {json.dumps(msg)}\n\n"
+            except asyncio.TimeoutError:
+                yield ": keepalive\n\n"
+
+        # Drain any remaining progress messages
+        while not progress_queue.empty():
+            msg = progress_queue.get_nowait()
+            yield f"data: {json.dumps(msg)}\n\n"
+
+        # Emit the final result (or error)
+        try:
+            result = future.result()
+            yield f"data: {json.dumps({'type': 'result', 'data': result})}\n\n"
+        except Exception as exc:
+            logger.error(f"Stream processing error: {exc}")
+            yield f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # prevent proxy buffering
+        },
+    )
+
+
+# ======================================================================
+# Recolor (fast palette swap using cached data)
+# ======================================================================
+
+@app.post("/api/recolor")
+@limiter.limit("120/minute")
+async def recolor_image(
+    request: Request,
+    session_id: str = Form(...),
+    style: str = Form("vibrant"),
+    custom_colors: str = Form(None),
+    use_five_colors: str = Form("false"),
+):
+    """
+    Instantly re-render a previously processed image with a new palette.
+    Skips edge detection, region finding, and graph coloring entirely.
+    """
+    cached = recolor_cache.get(session_id)
+    if cached is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Session expired or not found. Please re-process the image.",
+        )
+
+    use_five = use_five_colors.lower() in ("true", "1", "yes", "on")
+    max_colors = 5 if use_five else 4
+    custom_colors_list = _parse_custom_colors(custom_colors)
+    palette = _get_palette(style, custom_colors_list, max_colors)
+
+    start = time.time()
+    colored_image = render_from_cache(
+        cached["filtered"],
+        cached["balanced"],
+        cached["outline_mask"],
+        palette,
+    )
+
+    # Stained glass (reapply if it was on)
+    if cached.get("stained_glass"):
+        try:
+            from effects.stained_glass import apply_stained_glass
+            colored_image = apply_stained_glass(colored_image, intensity=0.8)
+        except Exception as e:
+            logger.warning(f"Stained glass failed during recolor: {e}")
+
+    # Upscale if the original was resized
+    size_metadata = cached.get("size_metadata")
+    if size_metadata and size_metadata.get("resized", False):
+        scale_factor = 1.0 / size_metadata["scale_factor"]
+        colored_image = upscale_image(colored_image, scale_factor, method="lanczos")
+
+    # Encode
+    result_pil = Image.fromarray(colored_image)
+    buffered = io.BytesIO()
+    result_pil.save(buffered, format="PNG")
+    img_base64 = base64.b64encode(buffered.getvalue()).decode()
+
+    elapsed_ms = round((time.time() - start) * 1000, 2)
+    logger.info(f"Recolor completed in {elapsed_ms}ms")
+
+    return JSONResponse(content={
+        "success": True,
+        "image": f"data:image/png;base64,{img_base64}",
+        "stats": cached["stats"],
+        "session_id": session_id,
+        "recolor_time_ms": elapsed_ms,
+    })
+
+
+# ======================================================================
+# Preview line art (unchanged)
+# ======================================================================
 
 @app.post("/api/preview-lineart")
 async def preview_lineart(
@@ -227,13 +413,16 @@ def process_pipeline(
     size_metadata: Optional[Dict] = None,
     use_five_colors: bool = False,
     custom_colors: Optional[List[List[int]]] = None,
+    progress_cb: Optional[Callable] = None,
 ) -> Dict[str, Any]:
     """
     Route to the correct pipeline:
     - If force_photo_pipeline is True (user toggled "Convert Photo to Line Art"),
       always use the photo pipeline.
-    - Otherwise, auto-detect: coloring book images → coloring book pipeline,
-      photos → photo pipeline.
+    - Otherwise, auto-detect: coloring book images -> coloring book pipeline,
+      photos -> photo pipeline.
+
+    Returns a dict with image, stats, and session_id for recoloring.
     """
     max_colors = 5 if use_five_colors else 4
     palette = _get_palette(style, custom_colors, max_colors)
@@ -247,17 +436,22 @@ def process_pipeline(
         logger.info(f"Pipeline: {'photo' if use_photo else 'coloring_book'} (auto-detected)")
 
     if use_photo:
-        colored_image, stats = process_photo(
+        colored_image, stats, recolor_data = process_photo(
             image_np, palette=palette, n_clusters=8,
             min_region_area=200, max_colors=max_colors,
+            progress_cb=progress_cb,
         )
         pipeline_name = "photo"
     else:
-        colored_image, stats = process_coloring_book(
+        colored_image, stats, recolor_data = process_coloring_book(
             image_np, palette=palette,
             min_region_area=50, max_colors=max_colors,
+            progress_cb=progress_cb,
         )
         pipeline_name = "coloring_book"
+
+    if progress_cb:
+        progress_cb("Applying effects", 90)
 
     # Stained glass (optional)
     if stained_glass_enabled:
@@ -273,11 +467,20 @@ def process_pipeline(
         scale_factor = 1.0 / size_metadata["scale_factor"]
         colored_image = upscale_image(colored_image, scale_factor, method="lanczos")
 
+    if progress_cb:
+        progress_cb("Encoding image", 95)
+
     # Encode
     result_pil = Image.fromarray(colored_image)
     buffered = io.BytesIO()
     result_pil.save(buffered, format="PNG")
     img_base64 = base64.b64encode(buffered.getvalue()).decode()
+
+    # Cache recolor data
+    recolor_data["stained_glass"] = stained_glass_enabled
+    recolor_data["size_metadata"] = size_metadata
+    recolor_data["stats"] = stats
+    session_id = recolor_cache.put(recolor_data)
 
     stats_dict = {
         "regions": stats["regions"],
@@ -293,11 +496,35 @@ def process_pipeline(
         stats_dict["original_size"] = size_metadata.get("original_size")
         stats_dict["processed_size"] = size_metadata.get("final_size")
 
+    if progress_cb:
+        progress_cb("Complete", 100)
+
     return {
         "success": True,
         "image": f"data:image/png;base64,{img_base64}",
         "stats": stats_dict,
+        "session_id": session_id,
     }
+
+
+# ======================================================================
+# Helpers
+# ======================================================================
+
+def _parse_custom_colors(raw: Optional[str]) -> Optional[List[List[int]]]:
+    """Parse a JSON string of [[r,g,b], ...] into a list, or return None."""
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, list) and len(parsed) > 0:
+            for color in parsed:
+                if not (isinstance(color, list) and len(color) == 3):
+                    return None
+            return parsed
+    except Exception:
+        pass
+    return None
 
 
 def _get_palette(style, custom_colors, max_colors):

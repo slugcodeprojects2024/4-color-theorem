@@ -9,6 +9,10 @@ Three entry points:
 
 Both pipelines fill every pixel with colour, use area-balanced
 graph colouring, and draw thin outlines only at region boundaries.
+
+Each pipeline returns (colored_image, stats, recolor_data) where
+recolor_data contains the intermediate arrays needed for instant
+palette swaps without re-running the heavy processing.
 """
 
 import cv2
@@ -16,10 +20,13 @@ import numpy as np
 from scipy import ndimage
 from collections import Counter
 import networkx as nx
-from typing import Dict, List, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 import logging
 
 logger = logging.getLogger(__name__)
+
+# Type alias for the optional progress callback
+ProgressCB = Optional[Callable[[str, int], None]]
 
 
 # ======================================================================
@@ -65,7 +72,6 @@ def _fill_unlabeled(labeled: np.ndarray) -> np.ndarray:
 
 
 def _filter_regions(labeled, min_area):
-    # Build a lookup table: old_label -> new_label (0 = removed)
     unique_labels, counts = np.unique(labeled, return_counts=True)
     max_label = int(unique_labels.max()) + 1
     lut = np.zeros(max_label, dtype=np.int32)
@@ -76,7 +82,6 @@ def _filter_regions(labeled, min_area):
         if count >= min_area:
             lut[label] = nl
             nl += 1
-    # Apply lookup table (vectorized, no per-region loop)
     filtered = lut[labeled]
     filtered = _fill_unlabeled(filtered)
     valid_labels = sorted(set(filtered.flatten()) - {0})
@@ -87,30 +92,25 @@ def _build_adjacency(filtered, valid_labels, radius=4):
     """Vectorized adjacency detection using NumPy array operations."""
     from collections import defaultdict
 
-    # Horizontal: compare pixels `radius` apart
     left = filtered[:, :-radius].ravel()
     right = filtered[:, radius:].ravel()
     hmask = (left != right) & (left > 0) & (right > 0)
 
-    # Vertical: compare pixels `radius` apart
     top = filtered[:-radius, :].ravel()
     bottom = filtered[radius:, :].ravel()
     vmask = (top != bottom) & (top > 0) & (bottom > 0)
 
-    # Combine all adjacent pairs
     p1 = np.concatenate([left[hmask], top[vmask]])
     p2 = np.concatenate([right[hmask], bottom[vmask]])
 
     if len(p1) == 0:
         return {r: set() for r in valid_labels}
 
-    # Deduplicate: pack sorted pairs into int64
     mins = np.minimum(p1, p2).astype(np.int64)
     maxs = np.maximum(p1, p2).astype(np.int64)
     packed = (mins << 32) | maxs
     unique_packed = np.unique(packed)
 
-    # Unpack into adjacency dict
     u1 = (unique_packed >> 32).astype(int)
     u2 = (unique_packed & 0xFFFFFFFF).astype(int)
 
@@ -119,7 +119,6 @@ def _build_adjacency(filtered, valid_labels, radius=4):
         adj[s1].add(s2)
         adj[s2].add(s1)
 
-    # Ensure all valid labels have an entry
     for r in valid_labels:
         if r not in adj:
             adj[r] = set()
@@ -197,19 +196,29 @@ def process_photo(
     min_region_area: int = 200,
     max_colors: int = 4,
     outline_thickness: str = "thin",
-) -> Tuple[np.ndarray, Dict]:
-    """Process a photograph via K-means clustering."""
+    progress_cb: ProgressCB = None,
+) -> Tuple[np.ndarray, Dict, Dict]:
+    """Process a photograph via K-means clustering.
+
+    Returns (colored_image, stats, recolor_data).
+    """
     h, w = image_rgb.shape[:2]
     logger.info(f"Photo pipeline: {w}x{h}")
 
-    # CLAHE
+    # --- Stage: enhance ---
+    if progress_cb:
+        progress_cb("Enhancing contrast", 10)
+
     lab = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2LAB)
     clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
     lab[:, :, 0] = clahe.apply(lab[:, :, 0])
     enhanced_rgb = cv2.cvtColor(lab, cv2.COLOR_LAB2RGB)
     enhanced_gray = cv2.cvtColor(enhanced_rgb, cv2.COLOR_RGB2GRAY)
 
-    # K-means cluster boundaries (subsampled for speed)
+    # --- Stage: cluster ---
+    if progress_cb:
+        progress_cb("Clustering pixels", 20)
+
     pixels = image_rgb.reshape(-1, 3).astype(np.float32)
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
 
@@ -219,7 +228,6 @@ def process_photo(
         _, _, centers = cv2.kmeans(
             pixels[sample_idx], n_clusters, None, criteria, 3, cv2.KMEANS_PP_CENTERS
         )
-        # Assign all pixels to nearest center in chunks
         labels_km = np.zeros(len(pixels), dtype=np.int32)
         chunk_size = 500_000
         for i in range(0, len(pixels), chunk_size):
@@ -240,7 +248,10 @@ def process_photo(
         cv2.morphologyEx(clustered, cv2.MORPH_GRADIENT, kc) > 0
     ).astype(np.uint8) * 255
 
-    # Multi-scale Canny
+    # --- Stage: edge detection ---
+    if progress_cb:
+        progress_cb("Detecting edges", 35)
+
     med = np.median(enhanced_gray)
     lo, hi = int(max(0, 0.67 * med)), int(min(255, 1.33 * med))
     edges_multi = np.zeros((h, w), dtype=np.uint8)
@@ -248,7 +259,6 @@ def process_photo(
         bl = cv2.GaussianBlur(enhanced_gray, (ks, ks), 0)
         edges_multi = cv2.bitwise_or(edges_multi, cv2.Canny(bl, lo, hi))
 
-    # Combine & close
     combined = (
         edges_multi.astype(np.float32) * 0.4
         + cluster_edges.astype(np.float32) * 0.6
@@ -262,26 +272,48 @@ def process_photo(
         cb, cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2)), iterations=1
     )
 
-    # Regions
+    # --- Stage: region detection ---
+    if progress_cb:
+        progress_cb("Finding regions", 50)
+
     _, labeled = cv2.connectedComponents(cv2.bitwise_not(thickened), connectivity=4)
     labeled = _fill_unlabeled(labeled)
     filtered, valid_labels = _filter_regions(labeled, min_region_area)
     logger.info(f"Photo regions: {len(valid_labels)}")
 
+    # --- Stage: graph colouring ---
+    if progress_cb:
+        progress_cb("Building adjacency graph", 60)
+
     adjacency = _build_adjacency(filtered, valid_labels, radius=3)
+
+    if progress_cb:
+        progress_cb("Solving graph coloring", 70)
+
     coloring, G = _graph_color(valid_labels, adjacency, max_colors)
     region_areas = _compute_areas(filtered, valid_labels)
     balanced = _area_balance(coloring, region_areas, adjacency, max_colors)
 
-    # Render using lookup table (vectorized, no per-region loop)
+    # --- Stage: render ---
+    if progress_cb:
+        progress_cb("Rendering result", 85)
+
+    outline_mask = thickened > 0
+
     max_label = int(filtered.max()) + 1
     color_lut = np.full((max_label, 3), 255, dtype=np.uint8)
     for r, c in balanced.items():
         color_lut[r] = palette[c % len(palette)]
     result = color_lut[filtered]
-    result[thickened > 0] = [0, 0, 0]
+    result[outline_mask] = [0, 0, 0]
 
-    return result, _make_stats(valid_labels, balanced, G)
+    recolor_data = {
+        "filtered": filtered,
+        "balanced": balanced,
+        "outline_mask": outline_mask,
+    }
+
+    return result, _make_stats(valid_labels, balanced, G), recolor_data
 
 
 # ======================================================================
@@ -289,10 +321,6 @@ def process_photo(
 # ======================================================================
 
 def _auto_threshold_coloring_book(gray: np.ndarray, target_pct: float = 0.10) -> int:
-    """
-    Find the brightness threshold where ~target_pct of pixels are darker.
-    This adapts to different line weights and background shades.
-    """
     hist = cv2.calcHist([gray], [0], None, [256], [0, 256]).flatten()
     cumsum = np.cumsum(hist / hist.sum())
     threshold = 128
@@ -309,27 +337,30 @@ def process_coloring_book(
     min_region_area: int = 50,
     max_colors: int = 4,
     outline_thickness: str = "thin",
-) -> Tuple[np.ndarray, Dict]:
-    """
-    Process a coloring book / line art image.
+    progress_cb: ProgressCB = None,
+) -> Tuple[np.ndarray, Dict, Dict]:
+    """Process a coloring book / line art image.
 
-    Uses adaptive thresholding tuned to capture ~10% of pixels as edges,
-    preserving fine detail in intricate designs while still finding clean
-    region boundaries in simple images.
+    Returns (colored_image, stats, recolor_data).
     """
     gray = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY)
     h, w = gray.shape
     logger.info(f"Coloring book pipeline: {w}x{h}")
 
-    # Adaptive threshold: capture ~10% of pixels as lines
+    # --- Stage: threshold ---
+    if progress_cb:
+        progress_cb("Analysing line work", 10)
+
     threshold = _auto_threshold_coloring_book(gray, target_pct=0.10)
     _, lines = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY_INV)
 
-    # Canny for additional edge detail
+    # --- Stage: edge detection ---
+    if progress_cb:
+        progress_cb("Detecting edges", 25)
+
     blurred = cv2.GaussianBlur(gray, (3, 3), 0.5)
     edges_canny = cv2.Canny(blurred, 30, 80)
 
-    # Combine and lightly close gaps
     combined = cv2.bitwise_or(lines, edges_canny)
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
     combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, kernel)
@@ -339,11 +370,13 @@ def process_coloring_book(
         f"(threshold={threshold})"
     )
 
-    # Find regions
+    # --- Stage: region detection ---
+    if progress_cb:
+        progress_cb("Finding regions", 45)
+
     _, labeled = cv2.connectedComponents(cv2.bitwise_not(combined), connectivity=4)
     labeled = _fill_unlabeled(labeled)
 
-    # Adaptive min-area: keep smaller regions for detailed images
     raw_count = len(np.unique(labeled)) - 1
     if raw_count > 500:
         min_area = max(20, min_region_area // 2)
@@ -353,31 +386,49 @@ def process_coloring_book(
     filtered, valid_labels = _filter_regions(labeled, min_area)
     logger.info(f"Coloring book regions: {len(valid_labels)} (min_area={min_area})")
 
+    # --- Stage: graph colouring ---
+    if progress_cb:
+        progress_cb("Building adjacency graph", 60)
+
     adjacency = _build_adjacency(filtered, valid_labels, radius=4)
+
+    if progress_cb:
+        progress_cb("Solving graph coloring", 70)
+
     coloring, G = _graph_color(valid_labels, adjacency, max_colors)
     region_areas = _compute_areas(filtered, valid_labels)
     balanced = _area_balance(coloring, region_areas, adjacency, max_colors)
 
-    # Render using lookup table (vectorized)
+    # --- Stage: render ---
+    if progress_cb:
+        progress_cb("Rendering result", 85)
+
     max_label = int(filtered.max()) + 1
     color_lut = np.full((max_label, 3), 255, dtype=np.uint8)
     for r, c in balanced.items():
         color_lut[r] = palette[c % len(palette)]
     result = color_lut[filtered]
 
-    # Thin outline at boundaries, using original dark pixels
+    # Build outline mask
+    outline_mask = np.zeros((h, w), dtype=bool)
     if outline_thickness != "none":
         boundary = np.zeros((h, w), dtype=bool)
         for dy, dx in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
             shifted = np.roll(np.roll(filtered, dy, axis=0), dx, axis=1)
             boundary |= (filtered != shifted)
         original_dark = gray < threshold
-        outline = boundary & original_dark
+        outline_mask = boundary & original_dark
         if outline_thickness == "medium":
             kern = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
-            outline = cv2.dilate(
-                outline.astype(np.uint8), kern, iterations=1
+            outline_mask = cv2.dilate(
+                outline_mask.astype(np.uint8), kern, iterations=1
             ).astype(bool)
-        result[outline] = [0, 0, 0]
+        result[outline_mask] = [0, 0, 0]
 
-    return result, _make_stats(valid_labels, balanced, G)
+    recolor_data = {
+        "filtered": filtered,
+        "balanced": balanced,
+        "outline_mask": outline_mask,
+    }
+
+    return result, _make_stats(valid_labels, balanced, G), recolor_data

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import ImageUploader from './components/ImageUploader';
 import ProcessButton from './components/ProcessButton';
 import ProgressIndicator from './components/ProgressIndicator';
@@ -6,100 +6,139 @@ import ResultViewer from './components/ResultViewer';
 import StyleSelector from './components/StyleSelector';
 import StainedGlassToggle from './components/StainedGlassToggle';
 import LineArtConverter from './components/LineArtConverter';
+import CustomColorPicker from './components/CustomColorPicker';
 import ImageHistory from './components/ImageHistory';
 import EducationalPage from './components/EducationalPage';
 import GalleryPage from './components/GalleryPage';
-import { processImage, checkServerStatus } from './services/api';
+import {
+  processImageWithProgress,
+  recolorImage,
+  checkServerStatus,
+} from './services/api';
 import { applyStainedGlassEffect } from './effects/stainedGlassEffect';
 import { saveImageToHistory } from './components/ImageHistory';
 
 function App() {
+  // --- Image state ---
   const [selectedImage, setSelectedImage] = useState(null);
   const [processedImage, setProcessedImage] = useState(null);
+  const [stats, setStats] = useState(null);
+  const [error, setError] = useState(null);
+
+  // --- Processing state ---
   const [isProcessing, setIsProcessing] = useState(false);
+  const [progressStage, setProgressStage] = useState(null);
+  const [progressPercent, setProgressPercent] = useState(null);
+  const [isRecoloring, setIsRecoloring] = useState(false);
+
+  // --- Session (for recolor) ---
+  const [sessionId, setSessionId] = useState(null);
+
+  // --- Settings ---
   const [selectedStyle, setSelectedStyle] = useState('vibrant');
   const [stainedGlassEnabled, setStainedGlassEnabled] = useState(false);
   const [lineArtEnabled, setLineArtEnabled] = useState(false);
   const [lineArtSettings, setLineArtSettings] = useState({
     lineThickness: 'medium',
     detailLevel: 'detailed',
-    contrast: 1.0
+    contrast: 1.0,
   });
-  const [stats, setStats] = useState(null);
-  const [error, setError] = useState(null);
+  const [customColorsEnabled, setCustomColorsEnabled] = useState(false);
+  const [customColors, setCustomColors] = useState([
+    [220, 20, 60],
+    [0, 191, 255],
+    [50, 205, 50],
+    [255, 215, 0],
+  ]);
+
+  // --- Pages ---
   const [serverStatus, setServerStatus] = useState(null);
   const [showEducationalPage, setShowEducationalPage] = useState(false);
   const [showGalleryPage, setShowGalleryPage] = useState(false);
 
-  // Check server status on mount
+  // Check server on mount
   useEffect(() => {
     checkServerStatus()
       .then(() => setServerStatus('connected'))
       .catch(() => setServerStatus('disconnected'));
   }, []);
 
+  // ------------------------------------------------------------------
+  // Handlers
+  // ------------------------------------------------------------------
+
   const handleImageSelect = (imageFile) => {
     setSelectedImage(imageFile);
     setProcessedImage(null);
     setStats(null);
     setError(null);
+    setSessionId(null);
+    setProgressStage(null);
+    setProgressPercent(null);
   };
 
+  const getCurrentSettings = useCallback(
+    () => ({
+      style: selectedStyle,
+      stainedGlass: stainedGlassEnabled,
+      lineArt: lineArtEnabled ? lineArtSettings : { enabled: false },
+      customColors: customColorsEnabled ? customColors : null,
+    }),
+    [selectedStyle, stainedGlassEnabled, lineArtEnabled, lineArtSettings, customColorsEnabled, customColors]
+  );
+
+  // Full pipeline processing (with streaming progress)
   const handleProcess = async () => {
     if (!selectedImage) {
       setError('Please select an image first');
       return;
     }
 
-    // Check server status before processing
     try {
       await checkServerStatus();
       setServerStatus('connected');
     } catch (err) {
       setServerStatus('disconnected');
-      setError('Server is not available. Please ensure the backend is running on port 8000.');
+      setError(
+        'Server is not available. Please ensure the backend is running on port 8000.'
+      );
       return;
     }
 
     setIsProcessing(true);
     setError(null);
+    setProgressStage('Starting…');
+    setProgressPercent(0);
 
     try {
-      // Prepare line art settings if enabled
-      const lineArtConfig = lineArtEnabled ? {
-        enabled: true,
-        ...lineArtSettings
-      } : null;
-
-      // Process image with all settings
-      const result = await processImage(
+      const result = await processImageWithProgress(
         selectedImage,
-        selectedStyle,
-        false, // Stained glass handled on frontend
-        lineArtConfig,
-        null // ML segmentation removed
+        {
+          style: selectedStyle,
+          stainedGlassEnabled: false, // stained glass handled on frontend
+          lineArtSettings: lineArtEnabled
+            ? { enabled: true, ...lineArtSettings }
+            : null,
+          customColors: customColorsEnabled ? customColors : null,
+        },
+        // Progress callback
+        (stage, pct) => {
+          setProgressStage(stage);
+          setProgressPercent(pct);
+        }
       );
 
-      console.log('Processing result received:', {
-        success: result.success,
-        hasImage: !!result.image,
-        imageLength: result.image?.length,
-        hasStats: !!result.stats,
-        stats: result.stats
-      });
-
       if (!result || !result.image) {
-        throw new Error('Server returned invalid response - no image data received');
+        throw new Error('Server returned invalid response - no image data');
       }
 
       let finalImage = result.image;
 
-      // Apply WebGL stained glass effect on frontend if enabled
+      // Client-side stained glass
       if (stainedGlassEnabled) {
         try {
-          console.log('Applying stained glass effect (intensity: 1.0)...');
+          setProgressStage('Applying stained glass…');
           finalImage = await applyStainedGlassEffect(result.image, 1.0);
-          console.log('Stained glass effect applied successfully');
         } catch (effectError) {
           console.error('Stained glass effect failed:', effectError);
           finalImage = result.image;
@@ -108,8 +147,8 @@ function App() {
 
       setProcessedImage(finalImage);
       setStats(result.stats);
+      setSessionId(result.session_id || null);
 
-      // Save to history (with error handling)
       try {
         saveImageToHistory(finalImage, getCurrentSettings(), result.stats);
       } catch (err) {
@@ -119,19 +158,82 @@ function App() {
       let errorMessage = err.message || 'Failed to process image';
 
       if (errorMessage.includes('too large') || errorMessage.includes('size')) {
-        errorMessage = 'Image is too large. Please use an image smaller than 50MB or 10000x10000px.';
-      } else if (errorMessage.includes('format') || errorMessage.includes('Invalid')) {
+        errorMessage =
+          'Image is too large. Please use an image smaller than 50MB or 10000×10000px.';
+      } else if (
+        errorMessage.includes('format') ||
+        errorMessage.includes('Invalid')
+      ) {
         errorMessage = 'Invalid image format. Please use PNG, JPG, or JPEG.';
-      } else if (errorMessage.includes('timeout') || errorMessage.includes('long')) {
-        errorMessage = 'Processing took too long. Try a smaller image or disable some effects.';
-      } else if (errorMessage.includes('Network') || errorMessage.includes('Cannot connect')) {
-        errorMessage = 'Cannot connect to server. Please ensure the backend is running:\n\n1. Open terminal in the backend folder\n2. Run: python app.py\n3. Server should start on http://localhost:8000';
+      } else if (
+        errorMessage.includes('timeout') ||
+        errorMessage.includes('long')
+      ) {
+        errorMessage =
+          'Processing took too long. Try a smaller image or disable some effects.';
+      } else if (
+        errorMessage.includes('Network') ||
+        errorMessage.includes('Cannot connect')
+      ) {
+        errorMessage =
+          'Cannot connect to server. Please ensure the backend is running.';
       }
 
       setError(errorMessage);
       console.error('Processing error:', err);
     } finally {
       setIsProcessing(false);
+      setProgressStage(null);
+      setProgressPercent(null);
+    }
+  };
+
+  // Fast recolor using cached pipeline data
+  const handleRecolor = async () => {
+    if (!sessionId) return;
+
+    setIsRecoloring(true);
+    setError(null);
+
+    try {
+      const result = await recolorImage(
+        sessionId,
+        selectedStyle,
+        customColorsEnabled ? customColors : null
+      );
+
+      let finalImage = result.image;
+
+      if (stainedGlassEnabled) {
+        try {
+          finalImage = await applyStainedGlassEffect(result.image, 1.0);
+        } catch (effectError) {
+          console.error('Stained glass effect failed:', effectError);
+          finalImage = result.image;
+        }
+      }
+
+      setProcessedImage(finalImage);
+      setStats(result.stats);
+      // session_id stays the same
+
+      try {
+        saveImageToHistory(finalImage, getCurrentSettings(), result.stats);
+      } catch (err) {
+        console.warn('Failed to save to history:', err);
+      }
+    } catch (err) {
+      if (err.message === 'SESSION_EXPIRED') {
+        setSessionId(null);
+        setError(
+          'Recolor session expired. Click "Color Image" to re-process.'
+        );
+      } else {
+        setError(err.message || 'Recolor failed');
+      }
+      console.error('Recolor error:', err);
+    } finally {
+      setIsRecoloring(false);
     }
   };
 
@@ -151,15 +253,18 @@ function App() {
     setLineArtSettings(newSettings);
   };
 
-  const getCurrentSettings = () => ({
-    style: selectedStyle,
-    stainedGlass: stainedGlassEnabled,
-    lineArt: lineArtEnabled ? lineArtSettings : { enabled: false },
-  });
+  const handleCustomColorsToggle = (enabled) => {
+    setCustomColorsEnabled(enabled);
+  };
+
+  const handleCustomColorsChange = (colors) => {
+    setCustomColors(colors);
+  };
 
   const handleSelectHistoryItem = (item) => {
     setProcessedImage(item.image);
     setStats(item.stats);
+    setSessionId(null); // history items don't have a recolor session
     if (item.settings) {
       setSelectedStyle(item.settings.style || 'vibrant');
       setStainedGlassEnabled(item.settings.stainedGlass || false);
@@ -173,25 +278,46 @@ function App() {
       } else {
         setLineArtEnabled(false);
       }
+      if (item.settings.customColors) {
+        setCustomColorsEnabled(true);
+        setCustomColors(item.settings.customColors);
+      } else {
+        setCustomColorsEnabled(false);
+      }
     }
   };
 
-  // Show educational page if requested
+  // ------------------------------------------------------------------
+  // Pages
+  // ------------------------------------------------------------------
+
   if (showEducationalPage) {
     return <EducationalPage onBack={() => setShowEducationalPage(false)} />;
   }
-
-  // Show gallery page if requested
   if (showGalleryPage) {
     return <GalleryPage onBack={() => setShowGalleryPage(false)} />;
   }
+
+  // ------------------------------------------------------------------
+  // Render
+  // ------------------------------------------------------------------
 
   return (
     <div className="App">
       <header className="App-header">
         <h1>Four Color Theorem</h1>
-        <p className="subtitle">Automatic Image Coloring using Graph Theory</p>
-        <div style={{ display: 'flex', gap: '10px', marginTop: '15px', flexWrap: 'wrap', justifyContent: 'center' }}>
+        <p className="subtitle">
+          Automatic Image Coloring using Graph Theory
+        </p>
+        <div
+          style={{
+            display: 'flex',
+            gap: '10px',
+            marginTop: '15px',
+            flexWrap: 'wrap',
+            justifyContent: 'center',
+          }}
+        >
           <button
             className="educational-link"
             onClick={() => setShowEducationalPage(true)}
@@ -203,7 +329,7 @@ function App() {
               color: 'white',
               fontSize: '14px',
               cursor: 'pointer',
-              transition: 'all 0.3s ease'
+              transition: 'all 0.3s ease',
             }}
           >
             Learn About the Theorem
@@ -219,7 +345,7 @@ function App() {
               color: 'white',
               fontSize: '14px',
               cursor: 'pointer',
-              transition: 'all 0.3s ease'
+              transition: 'all 0.3s ease',
             }}
           >
             View Example Gallery
@@ -229,17 +355,30 @@ function App() {
 
       <main className="App-main">
         {serverStatus === 'disconnected' && (
-          <div className="server-warning" style={{
-            background: '#fff3cd',
-            border: '1px solid #ffc107',
-            borderRadius: '8px',
-            padding: '12px',
-            margin: '20px 0',
-            color: '#856404'
-          }}>
+          <div
+            className="server-warning"
+            style={{
+              background: '#fff3cd',
+              border: '1px solid #ffc107',
+              borderRadius: '8px',
+              padding: '12px',
+              margin: '20px 0',
+              color: '#856404',
+            }}
+          >
             <strong>Server Not Connected</strong>
             <p style={{ margin: '8px 0 0 0', fontSize: '0.9rem' }}>
-              Backend server is not running. Please start it with: <code style={{background: '#f0f0f0', padding: '2px 6px', borderRadius: '3px'}}>python app.py</code> in the backend folder.
+              Backend server is not running. Please start it with:{' '}
+              <code
+                style={{
+                  background: '#f0f0f0',
+                  padding: '2px 6px',
+                  borderRadius: '3px',
+                }}
+              >
+                python app.py
+              </code>{' '}
+              in the backend folder.
             </p>
           </div>
         )}
@@ -264,26 +403,59 @@ function App() {
               selectedStyle={selectedStyle}
               onStyleChange={handleStyleChange}
             />
+
+            <CustomColorPicker
+              enabled={customColorsEnabled}
+              onToggle={handleCustomColorsToggle}
+              colors={customColors}
+              onColorsChange={handleCustomColorsChange}
+            />
+
             <LineArtConverter
               enabled={lineArtEnabled}
               onToggle={handleLineArtToggle}
               settings={lineArtSettings}
               onSettingsChange={handleLineArtSettingsChange}
             />
+
             <StainedGlassToggle
               enabled={stainedGlassEnabled}
               onToggle={handleStainedGlassToggle}
             />
+
             <ProcessButton
               onProcess={handleProcess}
-              disabled={isProcessing}
+              disabled={isProcessing || isRecoloring}
             />
+
+            {/* Recolor button: shown when there's a cached session */}
+            {sessionId && processedImage && (
+              <button
+                className="process-button"
+                onClick={handleRecolor}
+                disabled={isProcessing || isRecoloring}
+                style={{
+                  marginTop: '10px',
+                  background: isRecoloring
+                    ? '#ccc'
+                    : 'linear-gradient(135deg, #43e97b 0%, #38f9d7 100%)',
+                  color: isRecoloring ? '#666' : '#1a1a2e',
+                }}
+              >
+                {isRecoloring ? 'Recoloring…' : 'Recolor (Instant Palette Swap)'}
+              </button>
+            )}
           </div>
         )}
 
         <ImageHistory onSelectHistoryItem={handleSelectHistoryItem} />
 
-        {isProcessing && <ProgressIndicator />}
+        {isProcessing && (
+          <ProgressIndicator
+            progress={progressPercent}
+            stage={progressStage}
+          />
+        )}
 
         {error && (
           <div className="error-message">
@@ -291,16 +463,14 @@ function App() {
           </div>
         )}
 
-        {processedImage && (
-          <ResultViewer
-            image={processedImage}
-            stats={stats}
-          />
-        )}
+        {processedImage && <ResultViewer image={processedImage} stats={stats} />}
       </main>
 
       <footer className="App-footer">
-        <p>Upload a coloring book style image to automatically color it with 4 colors</p>
+        <p>
+          Upload a coloring book style image to automatically color it with 4
+          colors
+        </p>
       </footer>
     </div>
   );
