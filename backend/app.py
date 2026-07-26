@@ -26,6 +26,7 @@ from core.photo_processor import (
     is_coloring_book,
 )
 from core.recolor_cache import recolor_cache, render_from_cache
+from core.animation import build_animation_payload
 from utils.image_utils import optimize_image_size, validate_image_file, upscale_image
 
 logging.basicConfig(level=logging.INFO)
@@ -172,6 +173,10 @@ async def process_image(
             size_metadata=size_metadata,
             use_five_colors=use_five_colors_bool,
             custom_colors=custom_colors_list,
+            line_thickness=line_thickness,
+            detail_level=detail_level,
+            contrast=float(contrast) if contrast else 1.0,
+            include_animation=True,
         )
         return JSONResponse(content=result)
 
@@ -259,6 +264,10 @@ async def process_image_stream(
             size_metadata=size_metadata,
             use_five_colors=use_five_colors_bool,
             custom_colors=custom_colors_list,
+            line_thickness=line_thickness,
+            detail_level=detail_level,
+            contrast=float(contrast) if contrast else 1.0,
+            include_animation=True,
             progress_cb=progress_cb,
         )
 
@@ -331,13 +340,16 @@ async def recolor_image(
         cached["balanced"],
         cached["outline_mask"],
         palette,
+        line_alpha=cached.get("line_alpha"),
     )
 
     # Stained glass (reapply if it was on)
     if cached.get("stained_glass"):
         try:
-            from effects.stained_glass import apply_stained_glass
-            colored_image = apply_stained_glass(colored_image, intensity=0.8)
+            from effects.stained_glass_v2 import apply_stained_glass
+            colored_image = apply_stained_glass(
+                colored_image, intensity=0.8,
+                line_alpha=cached.get("line_alpha"))
         except Exception as e:
             logger.warning(f"Stained glass failed during recolor: {e}")
 
@@ -356,12 +368,18 @@ async def recolor_image(
     elapsed_ms = round((time.time() - start) * 1000, 2)
     logger.info(f"Recolor completed in {elapsed_ms}ms")
 
+    region_colors = {
+        str(r): palette[c % len(palette)]
+        for r, c in cached["balanced"].items()
+    }
+
     return JSONResponse(content={
         "success": True,
         "image": f"data:image/png;base64,{img_base64}",
         "stats": cached["stats"],
         "session_id": session_id,
         "recolor_time_ms": elapsed_ms,
+        "region_colors": region_colors,
     })
 
 
@@ -413,29 +431,51 @@ def process_pipeline(
     size_metadata: Optional[Dict] = None,
     use_five_colors: bool = False,
     custom_colors: Optional[List[List[int]]] = None,
+    line_thickness: str = "medium",
+    detail_level: str = "detailed",
+    contrast: float = 1.0,
+    include_animation: bool = False,
     progress_cb: Optional[Callable] = None,
 ) -> Dict[str, Any]:
     """
     Route to the correct pipeline:
-    - If force_photo_pipeline is True (user toggled "Convert Photo to Line Art"),
-      always use the photo pipeline.
-    - Otherwise, auto-detect: coloring book images -> coloring book pipeline,
-      photos -> photo pipeline.
 
-    Returns a dict with image, stats, and session_id for recoloring.
+    - "Convert Photo to Line Art" toggled on (force_photo_pipeline):
+        photo -> line art -> coloring book pipeline.
+        The intermediate line art is returned as `lineart`.
+    - Otherwise auto-detect:
+        coloring book images -> coloring book pipeline
+        photos               -> photo (posterize) pipeline
+
+    Returns a dict with image, stats, session_id, optional lineart, and an
+    optional `animation` payload for the real-time coloring window.
     """
     max_colors = 5 if use_five_colors else 4
     palette = _get_palette(style, custom_colors, max_colors)
 
-    # Decide which pipeline to use
-    if force_photo_pipeline:
-        use_photo = True
-        logger.info("Pipeline: photo (forced by user toggle)")
-    else:
-        use_photo = not is_coloring_book(image_np)
-        logger.info(f"Pipeline: {'photo' if use_photo else 'coloring_book'} (auto-detected)")
+    lineart_b64 = None
 
-    if use_photo:
+    if force_photo_pipeline:
+        # FIXED: this used to route to the k-means photo pipeline and
+        # never actually produced line art.
+        logger.info("Pipeline: photo -> line art -> coloring book")
+        if progress_cb:
+            progress_cb("Converting photo to line art", 5)
+        lineart = convert_photo_to_lineart(
+            image_np,
+            line_thickness=line_thickness,
+            detail_level=detail_level,
+            contrast=contrast,
+        )
+        lineart_b64 = _encode_png(lineart)
+        colored_image, stats, recolor_data = process_coloring_book(
+            lineart, palette=palette,
+            min_region_area=50, max_colors=max_colors,
+            progress_cb=progress_cb,
+        )
+        pipeline_name = "photo_to_lineart"
+    elif not is_coloring_book(image_np):
+        logger.info("Pipeline: photo (auto-detected)")
         colored_image, stats, recolor_data = process_photo(
             image_np, palette=palette, n_clusters=8,
             min_region_area=200, max_colors=max_colors,
@@ -443,6 +483,7 @@ def process_pipeline(
         )
         pipeline_name = "photo"
     else:
+        logger.info("Pipeline: coloring_book (auto-detected)")
         colored_image, stats, recolor_data = process_coloring_book(
             image_np, palette=palette,
             min_region_area=50, max_colors=max_colors,
@@ -451,16 +492,34 @@ def process_pipeline(
         pipeline_name = "coloring_book"
 
     if progress_cb:
-        progress_cb("Applying effects", 90)
+        progress_cb("Applying effects", 88)
 
-    # Stained glass (optional)
+    # Stained glass (optional, server-side; vectorized v2)
     if stained_glass_enabled:
         try:
-            from effects.stained_glass import apply_stained_glass
-            logger.info("Applying stained glass effect")
-            colored_image = apply_stained_glass(colored_image, intensity=0.8)
+            from effects.stained_glass_v2 import apply_stained_glass
+            logger.info("Applying stained glass effect (v2)")
+            colored_image = apply_stained_glass(
+                colored_image, intensity=0.8,
+                line_alpha=recolor_data.get("line_alpha"),
+            )
         except Exception as e:
             logger.warning(f"Stained glass failed: {e}")
+
+    # Animation payload (before upscaling - animation runs at processed res)
+    animation = None
+    if include_animation:
+        try:
+            if progress_cb:
+                progress_cb("Preparing animation data", 92)
+            animation = build_animation_payload(
+                recolor_data["filtered"],
+                recolor_data["balanced"],
+                palette,
+                recolor_data.get("line_alpha"),
+            )
+        except Exception as e:
+            logger.warning(f"Animation payload failed: {e}")
 
     # Upscale if needed
     if size_metadata and size_metadata.get("resized", False):
@@ -468,13 +527,9 @@ def process_pipeline(
         colored_image = upscale_image(colored_image, scale_factor, method="lanczos")
 
     if progress_cb:
-        progress_cb("Encoding image", 95)
+        progress_cb("Encoding image", 96)
 
-    # Encode
-    result_pil = Image.fromarray(colored_image)
-    buffered = io.BytesIO()
-    result_pil.save(buffered, format="PNG")
-    img_base64 = base64.b64encode(buffered.getvalue()).decode()
+    img_base64 = _encode_png(colored_image)
 
     # Cache recolor data
     recolor_data["stained_glass"] = stained_glass_enabled
@@ -499,12 +554,24 @@ def process_pipeline(
     if progress_cb:
         progress_cb("Complete", 100)
 
-    return {
+    result = {
         "success": True,
-        "image": f"data:image/png;base64,{img_base64}",
+        "image": img_base64,
         "stats": stats_dict,
         "session_id": session_id,
     }
+    if lineart_b64:
+        result["lineart"] = lineart_b64
+    if animation:
+        result["animation"] = animation
+    return result
+
+
+def _encode_png(arr: np.ndarray) -> str:
+    pil = Image.fromarray(arr)
+    buffered = io.BytesIO()
+    pil.save(buffered, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(buffered.getvalue()).decode()
 
 
 # ======================================================================

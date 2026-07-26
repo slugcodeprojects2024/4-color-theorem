@@ -1,228 +1,165 @@
 """
-Photo to Line Art Converter
-Converts regular photos into coloring book style line art
+Photo to Line Art Converter (v2)
+
+Converts photographs into clean coloring-book style line art.
+
+Approach:
+  1. Upscale small images so edge operators have enough pixels to work with.
+  2. Flatten texture with edge-preserving smoothing (repeated bilateral
+     filtering on a downscaled copy - the classic "cartoon" trick).
+  3. Extract lines two ways and combine:
+       a. Adaptive threshold  -> organic, sketch-like strokes
+       b. Median-based Canny  -> structural object boundaries
+  4. Close small gaps so regions are enclosed (colorable), remove specks.
+  5. Optional thickness adjustment, then anti-aliased final render.
 """
 
 import cv2
 import numpy as np
-from typing import Tuple, Optional
+from typing import Tuple
 import logging
 
 logger = logging.getLogger(__name__)
 
 
-class PhotoToLineArt:
-    """Convert photos to line art suitable for coloring."""
-    
-    def __init__(self):
-        self.default_line_thickness = 'medium'
-        self.default_detail_level = 'detailed'
-        self.default_contrast = 1.0
-    
-    def convert(
-        self,
-        image: np.ndarray,
-        line_thickness: str = 'medium',
-        detail_level: str = 'detailed',
-        contrast: float = 1.0
-    ) -> np.ndarray:
-        """
-        Convert a photo to line art.
-        
-        Args:
-            image: Input RGB image
-            line_thickness: 'thin', 'medium', or 'thick'
-            detail_level: 'simple' or 'detailed'
-            contrast: Contrast multiplier (0.5 to 2.0)
-            
-        Returns:
-            Line art image (grayscale, suitable for coloring)
-        """
-        # Convert to grayscale
-        if len(image.shape) == 3:
-            gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-        else:
-            gray = image.copy()
-        
-        h, w = gray.shape
-        
-        # Step 1: Enhance contrast
-        gray = self._adjust_contrast(gray, contrast)
-        
-        # Step 2: Apply bilateral filter to reduce noise while preserving edges
-        if detail_level == 'detailed':
-            filtered = cv2.bilateralFilter(gray, 9, 75, 75)
-        else:
-            filtered = cv2.bilateralFilter(gray, 15, 100, 100)  # More smoothing for simple
-        
-        # Step 3: Edge detection using multiple techniques
-        edges_canny = self._canny_edges(filtered, detail_level)
-        edges_adaptive = self._adaptive_threshold_edges(filtered, detail_level)
-        
-        # Step 4: Combine edge detection methods
-        combined = self._combine_edges(edges_canny, edges_adaptive, detail_level)
-        
-        # Step 5: Adjust line thickness
-        line_art = self._adjust_line_thickness(combined, line_thickness)
-        
-        # Step 6: Invert (black lines on white background)
-        line_art = 255 - line_art
-        
-        # Step 7: Clean up (remove small noise)
-        line_art = self._cleanup_noise(line_art, detail_level)
-        
-        # Convert back to RGB for consistency
-        line_art_rgb = cv2.cvtColor(line_art, cv2.COLOR_GRAY2RGB)
-        
-        return line_art_rgb
-    
-    def _adjust_contrast(self, image: np.ndarray, contrast: float) -> np.ndarray:
-        """Adjust image contrast."""
-        contrast = np.clip(contrast, 0.5, 2.0)
-        if contrast == 1.0:
-            return image
-        
-        # Apply contrast adjustment
-        alpha = contrast  # Contrast control (1.0 = no change)
-        beta = 0  # Brightness control
-        
-        adjusted = cv2.convertScaleAbs(image, alpha=alpha, beta=beta)
-        return adjusted
-    
-    def _canny_edges(self, image: np.ndarray, detail_level: str) -> np.ndarray:
-        """Extract edges using Canny edge detection."""
-        if detail_level == 'detailed':
-            # More sensitive for detailed images
-            low_threshold = 50
-            high_threshold = 150
-        else:
-            # Less sensitive for simple images
-            low_threshold = 80
-            high_threshold = 200
-        
-        edges = cv2.Canny(image, low_threshold, high_threshold)
-        return edges
-    
-    def _adaptive_threshold_edges(self, image: np.ndarray, detail_level: str) -> np.ndarray:
-        """Extract edges using adaptive thresholding."""
-        # Apply Gaussian blur first
-        blurred = cv2.GaussianBlur(image, (5, 5), 0)
-        
-        if detail_level == 'detailed':
-            block_size = 11
-            c_value = 2
-        else:
-            block_size = 15
-            c_value = 3
-        
-        # Adaptive threshold
-        thresh = cv2.adaptiveThreshold(
-            blurred,
-            255,
-            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-            cv2.THRESH_BINARY_INV,
-            block_size,
-            c_value
-        )
-        
-        # Extract edges from threshold
-        edges = cv2.Canny(thresh, 50, 150)
-        return edges
-    
-    def _combine_edges(
-        self,
-        edges1: np.ndarray,
-        edges2: np.ndarray,
-        detail_level: str
-    ) -> np.ndarray:
-        """Combine multiple edge detection results."""
-        # Weight the different methods
-        if detail_level == 'detailed':
-            weight1 = 0.6  # Canny
-            weight2 = 0.4  # Adaptive
-        else:
-            weight1 = 0.4  # Canny
-            weight2 = 0.6  # Adaptive (better for simple images)
-        
-        # Combine
-        combined = cv2.addWeighted(edges1, weight1, edges2, weight2, 0)
-        
-        # Threshold to binary
-        _, combined = cv2.threshold(combined, 30, 255, cv2.THRESH_BINARY)
-        
-        return combined
-    
-    def _adjust_line_thickness(
-        self,
-        edges: np.ndarray,
-        line_thickness: str
-    ) -> np.ndarray:
-        """Adjust the thickness of lines."""
-        if line_thickness == 'thin':
-            kernel_size = 1
-            iterations = 0
-        elif line_thickness == 'medium':
-            kernel_size = 3
-            iterations = 1
-        else:  # thick
-            kernel_size = 5
-            iterations = 2
-        
-        if iterations > 0:
-            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (kernel_size, kernel_size))
-            thickened = cv2.dilate(edges, kernel, iterations=iterations)
-        else:
-            thickened = edges
-        
-        return thickened
-    
-    def _cleanup_noise(self, image: np.ndarray, detail_level: str) -> np.ndarray:
-        """Remove small noise artifacts."""
-        # Remove very small connected components
-        # Increased thresholds to reduce number of tiny regions
-        if detail_level == 'simple':
-            min_area = 100  # Remove smaller components for simple mode
-        else:
-            min_area = 50  # Increased from 20 to reduce complexity
-        
-        # Find contours
-        contours, _ = cv2.findContours(image, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        # Create mask for valid contours
-        mask = np.zeros_like(image)
-        for contour in contours:
-            area = cv2.contourArea(contour)
-            if area > min_area:
-                cv2.drawContours(mask, [contour], -1, 255, -1)
-        
-        # Apply mask
-        cleaned = cv2.bitwise_and(image, mask)
-        
-        # Additional morphological operations to close small gaps
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_CLOSE, kernel, iterations=1)
-        
-        return cleaned
+def _odd(n: int) -> int:
+    n = int(n)
+    return n if n % 2 == 1 else n + 1
+
+
+def _smooth_flatten(rgb: np.ndarray) -> np.ndarray:
+    """Edge-preserving texture flattening (bilateral pyramid)."""
+    h, w = rgb.shape[:2]
+    # Work at reduced size for speed, then restore
+    scale = 1.0
+    small = rgb
+    if max(h, w) > 1200:
+        scale = 1200.0 / max(h, w)
+        small = cv2.resize(rgb, (int(w * scale), int(h * scale)),
+                           interpolation=cv2.INTER_AREA)
+    for _ in range(3):
+        small = cv2.bilateralFilter(small, 9, 60, 9)
+    if scale != 1.0:
+        small = cv2.resize(small, (w, h), interpolation=cv2.INTER_LINEAR)
+    return small
+
+
+def _remove_small_line_specks(lines: np.ndarray, min_area: int) -> np.ndarray:
+    """Remove tiny isolated line fragments (operates on line pixels == 255)."""
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(lines, connectivity=8)
+    if n <= 1:
+        return lines
+    keep = np.zeros(n, dtype=np.uint8)
+    keep[stats[:, cv2.CC_STAT_AREA] >= min_area] = 255
+    keep[0] = 0
+    return keep[labels]
 
 
 def convert_photo_to_lineart(
     image: np.ndarray,
-    line_thickness: str = 'medium',
-    detail_level: str = 'detailed',
-    contrast: float = 1.0
+    line_thickness: str = "medium",
+    detail_level: str = "detailed",
+    contrast: float = 1.0,
 ) -> np.ndarray:
     """
-    Convenience function to convert photo to line art.
-    
-    Args:
-        image: Input RGB image
-        line_thickness: 'thin', 'medium', or 'thick'
-        detail_level: 'simple' or 'detailed'
-        contrast: Contrast multiplier (0.5 to 2.0)
-        
-    Returns:
-        Line art image (RGB, black lines on white background)
-    """
-    converter = PhotoToLineArt()
-    return converter.convert(image, line_thickness, detail_level, contrast)
+    Convert a photo to coloring-book line art.
 
+    Returns an RGB image: black anti-aliased lines on a white background.
+    """
+    if image.ndim == 2:
+        image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
+
+    h0, w0 = image.shape[:2]
+
+    # --- 1. Ensure a workable resolution -------------------------------
+    work = image
+    upscaled = False
+    if max(h0, w0) < 700:
+        f = 700.0 / max(h0, w0)
+        work = cv2.resize(image, (int(w0 * f), int(h0 * f)),
+                          interpolation=cv2.INTER_CUBIC)
+        upscaled = True
+    h, w = work.shape[:2]
+
+    # --- 2. Flatten texture --------------------------------------------
+    flat = _smooth_flatten(work)
+    gray = cv2.cvtColor(flat, cv2.COLOR_RGB2GRAY)
+
+    # Mild local contrast so shadowed areas still yield edges
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    gray = clahe.apply(gray)
+
+    contrast = float(np.clip(contrast, 0.5, 2.0))
+    if contrast != 1.0:
+        gray = cv2.convertScaleAbs(gray, alpha=contrast,
+                                   beta=128 * (1 - contrast))
+
+    blurred = cv2.GaussianBlur(gray, (3, 3), 0)
+
+    # --- 3a. Adaptive-threshold strokes --------------------------------
+    # Block size scales with image size; C controls sensitivity.
+    if detail_level == "detailed":
+        block = _odd(max(11, min(h, w) // 40))
+        c_val = 6
+    else:
+        block = _odd(max(21, min(h, w) // 18))
+        c_val = 13
+        blurred = cv2.medianBlur(blurred, 5)
+    sketch = cv2.adaptiveThreshold(
+        blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY_INV, block, c_val,
+    )
+
+    # --- 3b. Structural Canny edges ------------------------------------
+    med = float(np.median(blurred))
+    lo = int(max(10, 0.55 * med))
+    hi = int(min(255, 1.35 * med))
+    canny = cv2.Canny(blurred, lo, hi, L2gradient=True)
+    # Slight dilation so canny lines survive the AND-style merge visually
+    canny = cv2.dilate(canny, cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE, (2, 2)), iterations=1)
+
+    lines = cv2.bitwise_or(sketch, canny)
+
+    # --- 4. Clean up ----------------------------------------------------
+    # Close 1-2 px gaps so regions are enclosed for coloring
+    lines = cv2.morphologyEx(
+        lines, cv2.MORPH_CLOSE,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
+    )
+    # Remove speckles (scaled with resolution)
+    speck = max(24, (h * w) // 18000)
+    if detail_level != "detailed":
+        speck *= 3
+    lines = _remove_small_line_specks(lines, speck)
+
+    # --- 5. Thickness ---------------------------------------------------
+    if line_thickness == "thick":
+        lines = cv2.dilate(lines, cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (3, 3)), iterations=1)
+    elif line_thickness == "thin":
+        lines = cv2.morphologyEx(lines, cv2.MORPH_OPEN,
+                                 cv2.getStructuringElement(
+                                     cv2.MORPH_ELLIPSE, (2, 2)))
+
+    # --- 6. Anti-aliased render ----------------------------------------
+    # Soft edges: blur the binary mask slightly, invert to white bg
+    soft = cv2.GaussianBlur(lines, (3, 3), 0.6).astype(np.float32) / 255.0
+    out = (255.0 * (1.0 - soft)).astype(np.uint8)
+
+    if upscaled:
+        out = cv2.resize(out, (w0, h0), interpolation=cv2.INTER_AREA)
+
+    dark_pct = float((out < 128).mean())
+    logger.info(f"Line art: {w0}x{h0}, dark={dark_pct:.1%}, "
+                f"thickness={line_thickness}, detail={detail_level}")
+
+    return cv2.cvtColor(out, cv2.COLOR_GRAY2RGB)
+
+
+# Backwards-compatible class wrapper
+class PhotoToLineArt:
+    def convert(self, image, line_thickness="medium",
+                detail_level="detailed", contrast=1.0):
+        return convert_photo_to_lineart(image, line_thickness,
+                                        detail_level, contrast)

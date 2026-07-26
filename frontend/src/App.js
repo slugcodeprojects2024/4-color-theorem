@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import ImageUploader from './components/ImageUploader';
 import ProcessButton from './components/ProcessButton';
 import ProgressIndicator from './components/ProgressIndicator';
-import ResultViewer from './components/ResultViewer';
+import ResultExperience from './components/ResultExperience';
 import StyleSelector from './components/StyleSelector';
 import StainedGlassToggle from './components/StainedGlassToggle';
 import LineArtConverter from './components/LineArtConverter';
@@ -15,7 +15,6 @@ import {
   recolorImage,
   checkServerStatus,
 } from './services/api';
-import { applyStainedGlassEffect } from './effects/stainedGlassEffect';
 import { saveImageToHistory } from './components/ImageHistory';
 
 function App() {
@@ -23,6 +22,9 @@ function App() {
   const [selectedImage, setSelectedImage] = useState(null);
   const [processedImage, setProcessedImage] = useState(null);
   const [stats, setStats] = useState(null);
+  const [animation, setAnimation] = useState(null);
+  const [lineartImage, setLineartImage] = useState(null);
+  const [originalUrl, setOriginalUrl] = useState(null);
   const [error, setError] = useState(null);
 
   // --- Processing state ---
@@ -71,6 +73,9 @@ function App() {
     setSelectedImage(imageFile);
     setProcessedImage(null);
     setStats(null);
+    setAnimation(null);
+    setLineartImage(null);
+    setOriginalUrl(imageFile ? URL.createObjectURL(imageFile) : null);
     setError(null);
     setSessionId(null);
     setProgressStage(null);
@@ -132,25 +137,14 @@ function App() {
         throw new Error('Server returned invalid response - no image data');
       }
 
-      let finalImage = result.image;
-
-      // Client-side stained glass
-      if (stainedGlassEnabled) {
-        try {
-          setProgressStage('Applying stained glass…');
-          finalImage = await applyStainedGlassEffect(result.image, 1.0);
-        } catch (effectError) {
-          console.error('Stained glass effect failed:', effectError);
-          finalImage = result.image;
-        }
-      }
-
-      setProcessedImage(finalImage);
+      setProcessedImage(result.image);
       setStats(result.stats);
       setSessionId(result.session_id || null);
+      setAnimation(result.animation || null);
+      setLineartImage(result.lineart || null);
 
       try {
-        saveImageToHistory(finalImage, getCurrentSettings(), result.stats);
+        saveImageToHistory(result.image, getCurrentSettings(), result.stats);
       } catch (err) {
         console.warn('Failed to save to history:', err);
       }
@@ -202,23 +196,18 @@ function App() {
         customColorsEnabled ? customColors : null
       );
 
-      let finalImage = result.image;
-
-      if (stainedGlassEnabled) {
-        try {
-          finalImage = await applyStainedGlassEffect(result.image, 1.0);
-        } catch (effectError) {
-          console.error('Stained glass effect failed:', effectError);
-          finalImage = result.image;
-        }
-      }
-
-      setProcessedImage(finalImage);
+      setProcessedImage(result.image);
       setStats(result.stats);
       // session_id stays the same
 
+      if (result.region_colors) {
+        setAnimation((prev) =>
+          prev ? { ...prev, region_colors: result.region_colors } : prev
+        );
+      }
+
       try {
-        saveImageToHistory(finalImage, getCurrentSettings(), result.stats);
+        saveImageToHistory(result.image, getCurrentSettings(), result.stats);
       } catch (err) {
         console.warn('Failed to save to history:', err);
       }
@@ -264,6 +253,8 @@ function App() {
   const handleSelectHistoryItem = (item) => {
     setProcessedImage(item.image);
     setStats(item.stats);
+    setAnimation(null);
+    setLineartImage(null);
     setSessionId(null); // history items don't have a recolor session
     if (item.settings) {
       setSelectedStyle(item.settings.style || 'vibrant');
@@ -389,7 +380,7 @@ function App() {
             <div className="preview-section">
               <h3>Original Image</h3>
               <img
-                src={URL.createObjectURL(selectedImage)}
+                src={originalUrl || URL.createObjectURL(selectedImage)}
                 alt="Selected"
                 className="preview-image"
               />
@@ -463,7 +454,18 @@ function App() {
           </div>
         )}
 
-        {processedImage && <ResultViewer image={processedImage} stats={stats} />}
+        {processedImage && (
+          <ResultExperience
+            image={processedImage}
+            stats={stats}
+            animation={animation}
+            lineart={lineartImage}
+            originalUrl={originalUrl}
+            defaultTab={
+              stainedGlassEnabled ? 'glass' : animation ? 'animation' : 'result'
+            }
+          />
+        )}
       </main>
 
       <footer className="App-footer">

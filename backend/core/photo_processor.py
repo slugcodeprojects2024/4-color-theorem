@@ -307,10 +307,16 @@ def process_photo(
     result = color_lut[filtered]
     result[outline_mask] = [0, 0, 0]
 
+    # Soft alpha version of the outline for consistent downstream use
+    line_alpha = cv2.GaussianBlur(
+        (outline_mask.astype(np.uint8) * 255), (3, 3), 0.6
+    )
+
     recolor_data = {
         "filtered": filtered,
         "balanced": balanced,
         "outline_mask": outline_mask,
+        "line_alpha": line_alpha,
     }
 
     return result, _make_stats(valid_labels, balanced, G), recolor_data
@@ -320,15 +326,43 @@ def process_photo(
 # Pipeline 2: Coloring book / line art
 # ======================================================================
 
-def _auto_threshold_coloring_book(gray: np.ndarray, target_pct: float = 0.10) -> int:
-    hist = cv2.calcHist([gray], [0], None, [256], [0, 256]).flatten()
-    cumsum = np.cumsum(hist / hist.sum())
-    threshold = 128
-    for t in range(256):
-        if cumsum[t] >= target_pct:
-            threshold = t
-            break
-    return max(100, min(threshold, 200))
+def _auto_threshold_coloring_book(gray: np.ndarray) -> int:
+    """
+    Threshold separating line pixels from paper.
+
+    Uses Otsu as a starting point, clamped to a sane range so scans with
+    gray shading or off-white paper don't blow up.
+    """
+    otsu, _ = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    return int(np.clip(otsu, 96, 200))
+
+
+def _line_alpha_from_gray(gray: np.ndarray, threshold: int) -> np.ndarray:
+    """
+    Anti-aliased line opacity (uint8) derived from the ORIGINAL artwork.
+
+    Pixels darker than (threshold - band) are fully opaque line;
+    opacity ramps smoothly to zero above the threshold. This preserves
+    the original smooth linework instead of reconstructing ragged
+    1-px boundaries.
+    """
+    g = gray.astype(np.float32)
+    band = 40.0
+    hi = float(threshold) + 12.0
+    lo = hi - band
+    alpha = np.clip((hi - g) / (hi - lo), 0.0, 1.0)
+    # smoothstep for softer ramp
+    alpha = alpha * alpha * (3.0 - 2.0 * alpha)
+    return (alpha * 255.0).astype(np.uint8)
+
+
+def composite_lines(colored: np.ndarray, line_alpha: np.ndarray,
+                    line_color=(0, 0, 0)) -> np.ndarray:
+    """Alpha-composite anti-aliased lines over a colored image."""
+    a = (line_alpha.astype(np.float32) / 255.0)[:, :, None]
+    lc = np.array(line_color, dtype=np.float32)[None, None, :]
+    out = colored.astype(np.float32) * (1.0 - a) + lc * a
+    return np.clip(out, 0, 255).astype(np.uint8)
 
 
 def process_coloring_book(
@@ -347,50 +381,45 @@ def process_coloring_book(
     h, w = gray.shape
     logger.info(f"Coloring book pipeline: {w}x{h}")
 
-    # --- Stage: threshold ---
+    # --- Stage: threshold -------------------------------------------------
     if progress_cb:
         progress_cb("Analysing line work", 10)
 
-    threshold = _auto_threshold_coloring_book(gray, target_pct=0.10)
+    threshold = _auto_threshold_coloring_book(gray)
     _, lines = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY_INV)
 
-    # --- Stage: edge detection ---
-    if progress_cb:
-        progress_cb("Detecting edges", 25)
-
-    blurred = cv2.GaussianBlur(gray, (3, 3), 0.5)
-    edges_canny = cv2.Canny(blurred, 30, 80)
-
-    combined = cv2.bitwise_or(lines, edges_canny)
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
-    combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, kernel)
+    # Seal tiny gaps in the linework so regions are enclosed.
+    # NOTE: no Canny here. Canny on clean line art produces double edges
+    # (one on each side of every stroke) which fragments the image into
+    # sliver regions and wrecks the coloring quality.
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    sealed = cv2.morphologyEx(lines, cv2.MORPH_CLOSE, kernel)
 
     logger.info(
-        f"Coloring book edges: {np.sum(combined > 0) / combined.size * 100:.1f}% "
+        f"Coloring book lines: {np.sum(sealed > 0) / sealed.size * 100:.1f}% "
         f"(threshold={threshold})"
     )
 
-    # --- Stage: region detection ---
+    # --- Stage: region detection -----------------------------------------
     if progress_cb:
-        progress_cb("Finding regions", 45)
+        progress_cb("Finding regions", 40)
 
-    _, labeled = cv2.connectedComponents(cv2.bitwise_not(combined), connectivity=4)
+    _, labeled = cv2.connectedComponents(cv2.bitwise_not(sealed), connectivity=4)
     labeled = _fill_unlabeled(labeled)
 
-    raw_count = len(np.unique(labeled)) - 1
-    if raw_count > 500:
-        min_area = max(20, min_region_area // 2)
-    else:
-        min_area = min_region_area
+    # Scale the minimum region size with resolution so speckles vanish
+    # on large scans but detail survives on small images.
+    auto_min = max(16, (h * w) // 40000)
+    min_area = max(min_region_area, auto_min)
 
     filtered, valid_labels = _filter_regions(labeled, min_area)
     logger.info(f"Coloring book regions: {len(valid_labels)} (min_area={min_area})")
 
-    # --- Stage: graph colouring ---
+    # --- Stage: graph colouring ------------------------------------------
     if progress_cb:
         progress_cb("Building adjacency graph", 60)
 
-    adjacency = _build_adjacency(filtered, valid_labels, radius=4)
+    adjacency = _build_adjacency(filtered, valid_labels, radius=3)
 
     if progress_cb:
         progress_cb("Solving graph coloring", 70)
@@ -399,7 +428,7 @@ def process_coloring_book(
     region_areas = _compute_areas(filtered, valid_labels)
     balanced = _area_balance(coloring, region_areas, adjacency, max_colors)
 
-    # --- Stage: render ---
+    # --- Stage: render ----------------------------------------------------
     if progress_cb:
         progress_cb("Rendering result", 85)
 
@@ -407,28 +436,19 @@ def process_coloring_book(
     color_lut = np.full((max_label, 3), 255, dtype=np.uint8)
     for r, c in balanced.items():
         color_lut[r] = palette[c % len(palette)]
-    result = color_lut[filtered]
+    flat = color_lut[filtered]
 
-    # Build outline mask
-    outline_mask = np.zeros((h, w), dtype=bool)
-    if outline_thickness != "none":
-        boundary = np.zeros((h, w), dtype=bool)
-        for dy, dx in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
-            shifted = np.roll(np.roll(filtered, dy, axis=0), dx, axis=1)
-            boundary |= (filtered != shifted)
-        original_dark = gray < threshold
-        outline_mask = boundary & original_dark
-        if outline_thickness == "medium":
-            kern = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
-            outline_mask = cv2.dilate(
-                outline_mask.astype(np.uint8), kern, iterations=1
-            ).astype(bool)
-        result[outline_mask] = [0, 0, 0]
+    # Overlay the ORIGINAL anti-aliased linework for crisp, smooth lines.
+    line_alpha = _line_alpha_from_gray(gray, threshold)
+    if outline_thickness == "none":
+        line_alpha = np.zeros_like(line_alpha)
+    result = composite_lines(flat, line_alpha)
 
     recolor_data = {
         "filtered": filtered,
         "balanced": balanced,
-        "outline_mask": outline_mask,
+        "outline_mask": None,
+        "line_alpha": line_alpha,
     }
 
     return result, _make_stats(valid_labels, balanced, G), recolor_data

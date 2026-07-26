@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 class RecolorCache:
-    def __init__(self, max_entries: int = 20, ttl_seconds: int = 1800):
+    def __init__(self, max_entries: int = 8, ttl_seconds: int = 1800):
         self._store: Dict[str, Dict[str, Any]] = {}
         self._lock = threading.Lock()
         self.max_entries = max_entries
@@ -80,8 +80,9 @@ recolor_cache = RecolorCache()
 def render_from_cache(
     filtered: np.ndarray,
     balanced: Dict[int, int],
-    outline_mask: np.ndarray,
+    outline_mask,
     palette: list,
+    line_alpha=None,
 ) -> np.ndarray:
     """
     Re-render a coloured image from cached intermediate data.
@@ -95,6 +96,9 @@ def render_from_cache(
     for region_id, color_idx in balanced.items():
         color_lut[region_id] = palette[color_idx % len(palette)]
     result = color_lut[filtered]
-    if outline_mask is not None:
+    if line_alpha is not None:
+        from core.photo_processor import composite_lines
+        result = composite_lines(result, line_alpha)
+    elif outline_mask is not None:
         result[outline_mask] = [0, 0, 0]
     return result

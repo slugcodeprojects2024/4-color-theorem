@@ -1,0 +1,47 @@
+.result-experience { margin-top: 20px; }
+
+.result-tabs {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+
+.result-tab {
+  padding: 9px 20px;
+  border: none;
+  border-radius: 8px 8px 0 0;
+  background: #e8e8f0;
+  color: #555;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.result-tab:hover { background: #dcdcea; }
+.result-tab.active {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: #fff;
+}
+
+.lineart-panel {
+  background: #fff;
+  border-radius: 12px;
+  padding: 16px;
+  text-align: center;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+}
+.lineart-image {
+  max-width: 100%;
+  border-radius: 8px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+}
+.lineart-download {
+  display: inline-block;
+  margin-top: 12px;
+  padding: 8px 18px;
+  border-radius: 6px;
+  background: #667eea;
+  color: #fff;
+  text-decoration: none;
+  font-size: 14px;
+}
