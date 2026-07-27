@@ -102,3 +102,14 @@ def render_from_cache(
     elif outline_mask is not None:
         result[outline_mask] = [0, 0, 0]
     return result
+
+
+def render_from_cache_entry(cached: dict, palette: list) -> np.ndarray:
+    """Render honoring per-session flags (e.g. luminance-sorted palette)."""
+    if cached.get("palette_luminance_sort"):
+        from core.photo_processor import sort_palette_by_luminance
+        palette = sort_palette_by_luminance(palette)
+    return render_from_cache(
+        cached["filtered"], cached["balanced"], cached["outline_mask"],
+        palette, line_alpha=cached.get("line_alpha"),
+    )

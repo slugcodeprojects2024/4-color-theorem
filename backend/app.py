@@ -23,9 +23,10 @@ from core.photo_to_lineart import convert_photo_to_lineart
 from core.photo_processor import (
     process_photo,
     process_coloring_book,
+    process_photo_as_lineart,
     is_coloring_book,
 )
-from core.recolor_cache import recolor_cache, render_from_cache
+from core.recolor_cache import recolor_cache, render_from_cache_entry
 from core.animation import build_animation_payload
 from utils.image_utils import optimize_image_size, validate_image_file, upscale_image
 
@@ -335,13 +336,7 @@ async def recolor_image(
     palette = _get_palette(style, custom_colors_list, max_colors)
 
     start = time.time()
-    colored_image = render_from_cache(
-        cached["filtered"],
-        cached["balanced"],
-        cached["outline_mask"],
-        palette,
-        line_alpha=cached.get("line_alpha"),
-    )
+    colored_image = render_from_cache_entry(cached, palette)
 
     # Stained glass (reapply if it was on)
     if cached.get("stained_glass"):
@@ -368,8 +363,12 @@ async def recolor_image(
     elapsed_ms = round((time.time() - start) * 1000, 2)
     logger.info(f"Recolor completed in {elapsed_ms}ms")
 
+    anim_palette = palette
+    if cached.get("palette_luminance_sort"):
+        from core.photo_processor import sort_palette_by_luminance
+        anim_palette = sort_palette_by_luminance(palette)
     region_colors = {
-        str(r): palette[c % len(palette)]
+        str(r): anim_palette[c % len(anim_palette)]
         for r, c in cached["balanced"].items()
     }
 
@@ -458,21 +457,16 @@ def process_pipeline(
     if force_photo_pipeline:
         # FIXED: this used to route to the k-means photo pipeline and
         # never actually produced line art.
-        logger.info("Pipeline: photo -> line art -> coloring book")
-        if progress_cb:
-            progress_cb("Converting photo to line art", 5)
-        lineart = convert_photo_to_lineart(
-            image_np,
+        logger.info("Pipeline: photo -> line art -> colored (segmentation-aware)")
+        colored_image, stats, recolor_data, lineart = process_photo_as_lineart(
+            image_np, palette=palette,
+            min_region_area=50, max_colors=max_colors,
             line_thickness=line_thickness,
             detail_level=detail_level,
             contrast=contrast,
-        )
-        lineart_b64 = _encode_png(lineart)
-        colored_image, stats, recolor_data = process_coloring_book(
-            lineart, palette=palette,
-            min_region_area=50, max_colors=max_colors,
             progress_cb=progress_cb,
         )
+        lineart_b64 = _encode_png(lineart)
         pipeline_name = "photo_to_lineart"
     elif not is_coloring_book(image_np):
         logger.info("Pipeline: photo (auto-detected)")
@@ -512,10 +506,14 @@ def process_pipeline(
         try:
             if progress_cb:
                 progress_cb("Preparing animation data", 92)
+            anim_palette = palette
+            if recolor_data.get("palette_luminance_sort"):
+                from core.photo_processor import sort_palette_by_luminance
+                anim_palette = sort_palette_by_luminance(palette)
             animation = build_animation_payload(
                 recolor_data["filtered"],
                 recolor_data["balanced"],
-                palette,
+                anim_palette,
                 recolor_data.get("line_alpha"),
             )
         except Exception as e:

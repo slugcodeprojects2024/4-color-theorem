@@ -37,8 +37,8 @@ def _smooth_flatten(rgb: np.ndarray) -> np.ndarray:
         scale = 1200.0 / max(h, w)
         small = cv2.resize(rgb, (int(w * scale), int(h * scale)),
                            interpolation=cv2.INTER_AREA)
-    for _ in range(3):
-        small = cv2.bilateralFilter(small, 9, 60, 9)
+    for _ in range(2):
+        small = cv2.bilateralFilter(small, 9, 55, 9)
     if scale != 1.0:
         small = cv2.resize(small, (w, h), interpolation=cv2.INTER_LINEAR)
     return small
@@ -60,6 +60,7 @@ def convert_photo_to_lineart(
     line_thickness: str = "medium",
     detail_level: str = "detailed",
     contrast: float = 1.0,
+    segmentation_edges: np.ndarray = None,
 ) -> np.ndarray:
     """
     Convert a photo to coloring-book line art.
@@ -120,6 +121,17 @@ def convert_photo_to_lineart(
         cv2.MORPH_ELLIPSE, (2, 2)), iterations=1)
 
     lines = cv2.bitwise_or(sketch, canny)
+
+    # Object boundaries from color segmentation (closes contours between
+    # objects that have no luminance edge - crucial so separate objects
+    # become separate colorable regions instead of one giant patch)
+    if segmentation_edges is not None:
+        seg = segmentation_edges
+        if seg.shape[:2] != (h, w):
+            seg = cv2.resize(seg, (w, h), interpolation=cv2.INTER_NEAREST)
+        seg = cv2.dilate(seg, cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (2, 2)), iterations=1)
+        lines = cv2.bitwise_or(lines, seg)
 
     # --- 4. Clean up ----------------------------------------------------
     # Close 1-2 px gaps so regions are enclosed for coloring
